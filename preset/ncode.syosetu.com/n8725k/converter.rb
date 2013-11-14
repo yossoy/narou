@@ -8,7 +8,17 @@
 #
 converter "ログ・ホライズン" do
   def before(io, element_type)
-    super
+    data = io.string
+    if element_type == "body"
+      if data =~ /[｜|]([^《]+)《(、+)》/
+        if $1.length == $2.length
+          data.gsub!(/[｜|]([^《]+)《(、+)》/) do |match|
+            "［＃傍点］" + $1 + "［＃傍点終わり］"
+          end
+        end
+      end
+    end
+    io
   end
 
   def after(io, text_type)
