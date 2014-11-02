@@ -7,7 +7,7 @@ require "fileutils"
 require "singleton"
 require "yaml"
 require_relative "narou"
-require_relative "localsetting"
+require_relative "inventory"
 
 class Database
   include Singleton
@@ -48,14 +48,14 @@ class Database
   end
 
   def initialize
-    @database = LocalSetting.get[DATABASE_NAME]
+    @database = Inventory.load(DATABASE_NAME, :local)
   end
 
   #
   # データベース初期設定
   #
   def self.init
-    unless File.exists?(ARCHIVE_ROOT_DIR_PATH)
+    unless File.exist?(ARCHIVE_ROOT_DIR_PATH)
       FileUtils.mkdir(ARCHIVE_ROOT_DIR_PATH)
       puts ARCHIVE_ROOT_DIR_PATH + " を作成しました"
     end
@@ -69,7 +69,7 @@ class Database
   end
 
   def save_database
-    LocalSetting.get.save_settings(DATABASE_NAME)
+    @database.save
   end
 
   def get_object

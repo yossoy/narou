@@ -7,11 +7,11 @@ require "fileutils"
 require_relative "../downloader"
 require_relative "../inspector"
 require_relative "../novelsetting"
-require_relative "../localsetting"
+require_relative "../inventory"
 
 module Command
   class Inspect < CommandBase
-    def oneline_help
+    def self.oneline_help
       "小説状態の調査状況ログを表示します"
     end
 
@@ -23,7 +23,7 @@ module Command
   ・小説を指定した場合はその小説のログを表示します。
   ・narou setting convert.inspect=true とすれば変換時に常に表示されるようになります。
 
-  Example:
+  Examples:
     narou inspect     # 直前の変換時のログを表示
     narou inspect 6   # ログを表示したい小説を指定する
       EOS
@@ -32,13 +32,14 @@ module Command
     def execute(argv)
       super
       if argv.empty?
-        latest_id = LocalSetting.get["latest_convert"]["id"]
+        latest_id = Inventory.load("latest_convert", :local)["id"]
         if latest_id
           data = Downloader.get_data_by_target(latest_id)
           display_log(data["title"])
         end
         return
       end
+      tagname_to_ids(argv)
       argv.each_with_index do |target, i|
         Helper.print_horizontal_rule if i > 0
         data = Downloader.get_data_by_target(target)
@@ -52,7 +53,7 @@ module Command
 
     def display_log(title)
       puts "(#{title} の小説状態調査状況ログ)"
-      novel_setting = NovelSetting.load(title)
+      novel_setting = NovelSetting.load(title, false)
       puts Inspector.read_messages(novel_setting) || "調査ログがまだ無いようです"
     end
   end

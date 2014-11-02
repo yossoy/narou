@@ -19,14 +19,14 @@ class Inspector
 
   KLASS_TAG = { ERROR => "エラー", WARNING =>  "警告", INFO => "INFO" }
 
-  IGNORE_INDENT_CHAR = "(（「『〈《≪【〔―・※［〝"
+  IGNORE_INDENT_CHAR = "(（「『〈《≪【〔―・※［〝\n"
   AUTO_INDENT_THRESHOLD_RATIO = 0.5   # 括弧等を除く全ての行のうちこの割合以上字下げされてなければ強制字下げする
 
   attr_writer :messages, :subtitle
 
   def self.read_messages(setting)
     inspect_log = File.join(setting.archive_path, INSPECT_LOG_NAME)
-    if File.exists?(inspect_log)
+    if File.exist?(inspect_log)
       File.read(inspect_log)
     else
       nil
@@ -194,10 +194,10 @@ class Inspector
     target_line_count = 0
     dont_indent_line_count = 0
     data.scan(/^[^#{IGNORE_INDENT_CHAR}]/).tap { |a|
-      target_line_count = a.count
+      target_line_count = a.size
     }.each { |line|
       head = line[0]
-      unless head == " " || head == "　"
+      if head != " " && head != "　"
         dont_indent_line_count += 1
       end
     }

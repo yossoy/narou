@@ -8,21 +8,27 @@ require_relative "../downloader"
 
 module Command
   class Download < CommandBase
+    SUPPORT_NOVEL_SITES = %w(小説家になろう(小説を読もう) ノクターンノベルズ ムーンライトノベルズ Arcadia ハーメルン 暁)
+
     def initialize
-      super("<target> [<target2> ...] [options]")
+      super("[<target> <target2> ...] [options]")
       @opt.separator <<-EOS
 
   ・ダウンロードしたい小説のNコードもしくはURLを指定して下さい。
-  ・一度に複数の小説を指定する場合は空白で区切って下さい。
+  ・対応サイトは#{SUPPORT_NOVEL_SITES.join("、")}です。
+  ・ArcadiaのURLを入力するときは" "で囲って下さい。
   ・ダウンロード終了後に変換処理を行います。ダウンロードのみする場合は-nオプションを指定して下さい。
   ・すでにダウンロード済みの小説の場合は何もしません。
+  ・--remove オプションをつけてダウンロードすると、ダウンロード（とその後の変換、送信）が終わったあと削除します。データベースのインデックスを外すだけなので、変換した書籍データは残ったままになります。ファイルを全て消す場合は手動で削除する必要があります。
+  ・NコードもURLも指定しなかった場合、対話モード移行します。
 
-  Example:
+  Examples:
     narou download n9669bk
     narou download http://ncode.syosetu.com/n9669bk/
     narou download n9669bk http://ncode.syosetu.com/n4259s/
     narou download 0 1 -f
     narou download n9669bk -n
+    narou download n6864bt --remove
 
   Options:
       EOS
@@ -32,20 +38,72 @@ module Command
       @opt.on("-n", "--no-convert", "変換をせずダウンロードのみ実行する") {
         @options["no-convert"] = true
       }
+      @opt.on("-z", "--freeze", "ダウンロードが終了したあと凍結する") {
+        @options["freeze"] = true
+      }
+      @opt.on("-r", "--remove", "ダウンロードが終了したあと削除する") {
+        @options["remove"] = true
+      }
+    end
+
+    def valid_target?(target)
+      @site_settings ||= Downloader.load_settings
+      case Downloader.get_target_type(target)
+      when :ncode
+        true
+      when :url
+        !!@site_settings.find { |s| s.multi_match(target, "url") }
+      else
+        false
+      end
+    end
+
+    def print_prompt(targets)
+      print "#{targets.size}> "
+    end
+
+    def interactive_mode
+      targets = []
+      puts "【対話モード】"
+      puts "ダウンロードしたい小説のNコードもしくはURLを入力して下さい。(1行に1つ)"
+      puts "連続して複数の小説を入力していきます。"
+      puts "対応サイトは#{SUPPORT_NOVEL_SITES.join("、")}です。"
+      puts "入力を終了してダウンロードを開始するには未入力のままエンターを押して下さい。"
+      puts
+      print_prompt(targets)
+      while input = $stdin.gets
+        input.strip!
+        break if input == ""
+        if valid_target?(input)
+          if targets.include?(input)
+            error "入力済みです"
+          else
+            targets << input
+          end
+        else
+          error "対応外の小説です"
+        end
+        print_prompt(targets)
+      end
+      targets
     end
 
     def execute(argv)
       super
+      mistook_count = 0
       if argv.empty?
-        puts @opt.help
-        return
+        targets = interactive_mode
+        return if targets.size == 0
+        argv += targets
       end
+      tagname_to_ids(argv)
       argv.each.with_index(1) do |target, i|
         download_target ||= target
         Helper.print_horizontal_rule if i > 1
         data = Downloader.get_data_by_target(download_target)
         if Narou.novel_frozen?(download_target)
           puts "#{data["title"]} は凍結中です\nダウンロードを中止しました"
+          mistook_count += 1
           next
         end
         if !@options["force"] && data
@@ -53,24 +111,35 @@ module Command
             puts "#{download_target} はダウンロード済みです。"
             puts "ID: #{data["id"]}"
             puts "title: #{data["title"]}"
+            mistook_count += 1
           else
             if Helper.confirm("再ダウンロードしますか")
               download_target = data["toc_url"]
               redo
+            else
+              mistook_count += 1
             end
           end
           next
         end
-        if Downloader.start(download_target, @options["force"], true) != :ok
+        if Downloader.start(download_target, @options["force"], true).status != :ok
+          mistook_count += 1
           next
         end
         unless @options["no-convert"]
-          Convert.execute_and_rescue_exit([download_target])
+          Convert.execute!([download_target])
+        end
+        if @options["freeze"]
+          Freeze.execute!([download_target])
+        elsif @options["remove"]
+          # --freeze オプションが指定された場合は --remove オプションは無視する
+          Remove.execute!([download_target, "-y"])
         end
       end
+      exit mistook_count if mistook_count > 0
     end
 
-    def oneline_help
+    def self.oneline_help
       "指定した小説をダウンロードします"
     end
   end

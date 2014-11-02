@@ -7,15 +7,21 @@ require_relative "../helper"
 
 module Command
   class Folder < CommandBase
+    def self.oneline_help
+      "小説の保存フォルダを開きます"
+    end
+
     def initialize
       super("<target> [<target2> ...]")
       @opt.separator <<-EOS
 
   ・指定した小説の保存フォルダを開きます。
 
-  Example:
+  Examples:
     narou folder n9669bk
     narou folder musyoku
+    narou folder 0
+    narou f 0
       EOS
     end
 
@@ -25,6 +31,7 @@ module Command
         puts @opt.help
         return
       end
+      tagname_to_ids(argv)
       argv.each do |target|
         dir = Downloader.get_novel_data_dir_by_target(target)
         if dir
@@ -34,10 +41,6 @@ module Command
           error "#{target} は存在しません"
         end
       end
-    end
-
-    def oneline_help
-      "小説の保存フォルダを開きます"
     end
   end
 end

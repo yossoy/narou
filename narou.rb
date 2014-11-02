@@ -6,15 +6,21 @@
 # Copyright 2013 whiteleaf. All rights reserved.
 #
 
-$debug = File.exists?(File.join(File.expand_path(File.dirname($0)), "debug"))
+$debug = File.exist?(File.join(File.expand_path(File.dirname(__FILE__)), "debug"))
 Encoding.default_external = Encoding::UTF_8
 
-require_relative "lib/globalsetting"
+if ARGV.delete("--time")
+  now = Time.now
+  at_exit do
+    puts "実行時間 #{Time.now - now}秒"
+  end
+end
 
-display_backtrace = ARGV.delete("--backtrace")
-display_backtrace ||= $debug
+require_relative "lib/inventory"
+$display_backtrace = ARGV.delete("--backtrace")
+$display_backtrace ||= $debug
 $disable_color = ARGV.delete("--no-color")
-$disable_color ||= GlobalSetting.get["global_setting"]["no-color"]
+$disable_color ||= Inventory.load("global_setting", :global)["no-color"]
 
 require_relative "lib/logger"
 require_relative "lib/version"
@@ -24,9 +30,11 @@ rescue_level = $debug ? Exception : StandardError
 
 begin
   CommandLine.run(ARGV.map { |v| v.dup })
+rescue SystemExit => e
+  exit e.status
 rescue rescue_level => e
   warn $@.shift + ": #{e.message} (#{e.class})"
-  if display_backtrace
+  if $display_backtrace
     $@.each do |b|
       warn "  from #{b}"
     end
@@ -34,5 +42,6 @@ rescue rescue_level => e
     warn "  エラーが発生したため終了しました。"
     warn "  詳細なエラーは --backtrace オプションを付けて再度実行して下さい。"
   end
-  exit 1
+  exit Narou::EXIT_ERROR_CODE
 end
+

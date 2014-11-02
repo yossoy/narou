@@ -6,10 +6,12 @@
 require_relative "narou"
 require_relative "command"
 require_relative "helper"
-require_relative "localsetting"
+require_relative "inventory"
 
 module CommandLine
-  def self.run(argv)
+  module_function
+
+  def run(argv)
     if Helper.os_windows?
       argv.map! do |arg|
         arg.encode(Encoding::UTF_8)
@@ -30,14 +32,42 @@ module CommandLine
       puts
       arg = "help"
     end
-    if argv.empty?
+    if argv.empty? && STDIN.tty?
       argv += load_default_arguments(arg)
     end
-    Command.get_list[arg].execute(argv)
+    if argv.delete("--multiple")
+      multiple_argument_extract(argv)
+    end
+    unless STDIN.tty?
+      # pipeで接続された場合、標準入力からIDリストを受け取って引数に繋げる
+      argv += STDIN.gets.split
+    end
+    Command.get_list[arg].new.execute(argv)
   end
 
-  def self.load_default_arguments(cmd)
-    default_arguments_list = LocalSetting.get["local_setting"]
+  #
+  # exit を捕捉して終了コードを返す
+  #
+  def run!(argv)
+    run(argv)
+  rescue SystemExit => e
+    e.status
+  else
+    0
+  end
+
+  def load_default_arguments(cmd)
+    default_arguments_list = Inventory.load("local_setting", :local)
     (default_arguments_list["default_args.#{cmd}"] || "").split
+  end
+
+  #
+  # 引数をスペース以外による区切り文字で展開する
+  #
+  def multiple_argument_extract(argv)
+    delimiter = Inventory.load("local_setting", :local)["multiple-delimiter"] || ","
+    argv.map! { |arg|
+      arg.split(delimiter)
+    }.flatten!
   end
 end

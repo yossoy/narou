@@ -13,20 +13,30 @@ require_relative "downloader"
 require_relative "template"
 require_relative "progressbar"
 require_relative "helper"
-require_relative "localsetting"
+require_relative "inventory"
+require_relative "html"
 
 class NovelConverter
   NOVEL_TEXT_TEMPLATE_NAME = "novel.txt"
+  NOVEL_TEXT_TEMPLATE_NAME_FOR_IBUNKO = "ibunko_novel.txt"
 
   attr_reader :use_dakuten_font
+
+  if Narou.already_init?
+    @@site_settings = Downloader.load_settings
+  end
 
   #
   # 指定の小説を整形・変換する
   #
-  def self.convert(target, output_filename = nil, display_inspector = false)
-    setting = NovelSetting.load(target)
+  def self.convert(target, options = {})
+    options = {
+      # default paraeters
+      output_filename: nil, display_inspector: false, ignore_force: false,
+    }.merge(options)
+    setting = NovelSetting.load(target, options[:ignore_force])
     if setting
-      novel_converter = new(setting, output_filename, display_inspector)
+      novel_converter = new(setting, options[:output_filename], options[:display_inspector])
       return {
         converted_txt_path: novel_converter.convert_main,
         use_dakuten_font: novel_converter.use_dakuten_font
@@ -38,19 +48,24 @@ class NovelConverter
   #
   # テキストファイルを整形・変換する
   #
-  def self.convert_file(filename, encoding = nil, output_filename = nil, display_inspector = false)
+  def self.convert_file(filename, options = {})
+    options = {
+      # default parameters
+      encoding: nil, output_filename: nil, display_inspector: false, ignore_force: false,
+    }.merge(options)
+    output_filename = options[:output_filename]
     if output_filename
       archive_path = File.dirname(output_filename) + "/"
     else
       archive_path = File.dirname(filename) + "/"
     end
-    setting = NovelSetting.new(archive_path)
+    setting = NovelSetting.new(archive_path, options[:ignore_force])
     setting.author = ""
     setting.title = File.basename(filename)
-    novel_converter = new(setting, output_filename, display_inspector)
-    text = open(filename, "r:BOM|UTF-8") { |fp| fp.read }
-    if encoding
-      text.force_encoding(encoding).encode!(Encoding::UTF_8)
+    novel_converter = new(setting, output_filename, options[:display_inspector])
+    text = open(filename, "r:BOM|UTF-8") { |fp| fp.read }.gsub("\r", "")
+    if options[:encoding]
+      text.force_encoding(options[:encoding]).encode!(Encoding::UTF_8)
     end
     {
       converted_txt_path: novel_converter.convert_main(text),
@@ -60,13 +75,13 @@ class NovelConverter
 
   def self.stash_aozora_fonts_directory
     fonts_path = File.join(File.dirname(Narou.get_aozoraepub3_path), "template/OPS/fonts")
-    return unless File.exists?(fonts_path)
+    return unless File.exist?(fonts_path)
     FileUtils.mv(fonts_path, fonts_path + "_hide")
   end
 
   def self.visible_aozora_fonts_directory
     fonts_path = File.join(File.dirname(Narou.get_aozoraepub3_path), "template/OPS/fonts")
-    return unless File.exists?(fonts_path + "_hide")
+    return unless File.exist?(fonts_path + "_hide")
     FileUtils.mv(fonts_path + "_hide", fonts_path)
   end
 
@@ -82,10 +97,12 @@ class NovelConverter
   #
   def self.txt_to_epub(filename, use_dakuten_font = false, dst_dir = nil, device = nil, verbose = false)
     abs_srcpath = File.expand_path(filename)
+    src_dir = File.dirname(abs_srcpath)
 
     cover_option = ""
     # MEMO: 外部実行からだと -c FILENAME, -c 1 オプションはぬるぽが出て動かない
-    if get_cover_filename(File.dirname(abs_srcpath))
+    cover_filename = get_cover_filename(src_dir)
+    if cover_filename
       cover_option = "-c 0"   # 先頭の挿絵を表紙として利用
     end
 
@@ -116,8 +133,16 @@ class NovelConverter
     aozoraepub3_basename = File.basename(aozoraepub3_path)
     aozoraepub3_dir = File.dirname(aozoraepub3_path)
 
+<<<<<<< HEAD
     java_encoding = Helper.os_mac? ? "-Dfile.encoding=UTF-8" : ""
 
+=======
+    java_encoding = "-Dfile.encoding=UTF-8"
+
+    if Helper.os_cygwin?
+      abs_srcpath = Helper.convert_to_windows_path(abs_srcpath)
+    end
+>>>>>>> upstream/master
     Dir.chdir(aozoraepub3_dir)
     command = %!java #{java_encoding} -cp #{aozoraepub3_basename} AozoraEpub3 -enc UTF-8 -of #{device_option} ! +
               %!#{cover_option} #{dst_option} #{ext_option} "#{abs_srcpath}"!
@@ -126,19 +151,26 @@ class NovelConverter
     end
     stash_aozora_fonts_directory unless use_dakuten_font
     print "AozoraEpub3でEPUBに変換しています"
-    res = Helper::AsyncCommand.exec(command) do
-      print "."
+    begin
+      res = Helper::AsyncCommand.exec(command) do
+        print "."
+      end
+    ensure
+      visible_aozora_fonts_directory unless use_dakuten_font
+      Dir.chdir(pwd)
     end
-    visible_aozora_fonts_directory unless use_dakuten_font
 
     stdout_capture = res[0]
-    if Helper.os_windows?
-      stdout_capture = stdout_capture.force_encoding(Encoding::Shift_JIS).encode(Encoding::UTF_8)
-    else
-      stdout_capture.force_encoding(Encoding::UTF_8)
-    end
 
-    Dir.chdir(pwd)
+    # Javaの実行環境に由来するであろうエラー
+    if stdout_capture =~ /Error occurred during initialization of VM/
+      puts
+      warn stdout_capture.strip
+      warn "-" * 70
+      error "Javaの実行エラーが発生しました。EPUBを作成出来ませんでした\n" \
+            "Hint: 複数のJava環境が混じっていると起きやすいエラーのようです"
+      return :error
+    end
 
     if verbose
       puts
@@ -179,10 +211,13 @@ class NovelConverter
       return :error
     end
 
-    if Helper.os_windows?
-      epub_path.encode!(Encoding::Windows_31J)
+    if Helper.os_cygwin?
+      epub_path = Helper.convert_to_windows_path(epub_path)
     end
     command = %!"#{kindlegen_path}" -locale ja "#{epub_path}"!
+    if Helper.os_windows?
+      command.encode!(Encoding::Windows_31J)
+    end
     print "kindlegen実行中"
     res = Helper::AsyncCommand.exec(command) do
       print "."
@@ -237,7 +272,31 @@ class NovelConverter
     toc = @toc
     cover_chuki = @cover_chuki
     device = Narou.get_device
-    Template.get(NOVEL_TEXT_TEMPLATE_NAME, binding)
+    setting = @setting
+    processed_title = toc["title"]
+    data = Database.instance.get_data("id", @novel_id)
+    # タイトルに新着更新日を付加する
+    if @setting.enable_add_date_to_title
+      new_arrivals_date = data["new_arrivals_date"] || data["last_update"]
+      date_str = new_arrivals_date.strftime(@setting.title_date_format)
+      if @setting.title_date_align == "left"
+        processed_title = date_str + processed_title
+      else  # right
+        processed_title += date_str
+      end
+    end
+    # タイトルに完結したかどうかを付加する
+    flags = data["flags"] || {}
+    tags = data["tags"] || []
+    flags["end"] ||= tags.include?("end")
+    if flags["end"]
+      processed_title += " (完結)"
+    end
+    # タイトルがルビ化されてしまうのを抑制
+    processed_title = processed_title.gsub("《", "※［＃始め二重山括弧］")
+                                     .gsub("》", "※［＃終わり二重山括弧］")
+    tempalte_name = (device && device.ibunko? ? NOVEL_TEXT_TEMPLATE_NAME_FOR_IBUNKO : NOVEL_TEXT_TEMPLATE_NAME)
+    Template.get(tempalte_name, binding)
   end
 
   #
@@ -247,7 +306,7 @@ class NovelConverter
     [".jpg", ".png", ".jpeg"].each do |ext|
       filename = "cover#{ext}"
       cover_path = File.join(archive_path, filename)
-      if File.exists?(cover_path)
+      if File.exist?(cover_path)
         return filename
       end
     end
@@ -264,6 +323,10 @@ class NovelConverter
     else
       ""
     end
+  end
+
+  def find_site_setting
+    @@site_settings.find { |s| s.multi_match(@toc["toc_url"], "url") }
   end
 
   #
@@ -287,13 +350,26 @@ class NovelConverter
     else
       @section_save_dir = Downloader.get_novel_section_save_dir(@setting.archive_path)
       @toc = Downloader.get_toc_data(@setting.archive_path)
-      progressbar = ProgressBar.new(@toc["subtitles"].count)
+      @toc["story"] = conv.convert(@toc["story"], "story")
+      html = HTML.new
+      site_setting = find_site_setting
+      html.set_illust_setting({current_url: site_setting["illust_current_url"],
+                               grep_pattern: site_setting["illust_grep_pattern"]})
+      progressbar = ProgressBar.new(@toc["subtitles"].size)
       @toc["subtitles"].each_with_index do |subinfo, i|
         progressbar.output(i)
         section = load_novel_section(subinfo)
+        if section["chapter"].length > 0
+          section["chapter"] = conv.convert(section["chapter"], "chapter")
+        end
         @inspector.subtitle = section["subtitle"]
         element = section["element"]
+        data_type = element.delete("data_type") || "text"
         element.each do |text_type, elm_text|
+          if data_type == "html"
+            html.string = elm_text
+            elm_text = html.to_aozora
+          end
           element[text_type] = conv.convert(elm_text, text_type)
         end
         section["subtitle"] = conv.convert(section["subtitle"], "subtitle")
@@ -392,7 +468,9 @@ class NovelConverter
   #
   def update_latest_convert_novel
     id = Downloader.get_id_by_target(@novel_title)
-    LocalSetting.get["latest_convert"]["id"] = id
-    LocalSetting.get.save_settings
+    Inventory.load("latest_convert", :local).tap { |inv|
+      inv["id"] = id
+      inv.save
+    }
   end
 end

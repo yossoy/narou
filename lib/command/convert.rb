@@ -4,36 +4,33 @@
 #
 
 require "fileutils"
-require_relative "../database"
 require_relative "../downloader"
 require_relative "../novelconverter"
-require_relative "../localsetting"
+require_relative "../inventory"
 require_relative "../kindlestrip"
 
 module Command
   class Convert < CommandBase
-    @@database = Database.instance
-
-    def oneline_help
+    def self.oneline_help
       "小説を変換します。管理小説以外にテキストファイルも変換可能"
     end
 
     def initialize
-      super("<target> [<target2> ...] [option]")
+      super("<target> [<target2> ...] [options]")
       @opt.separator <<-EOS
 
   ・指定した小説を縦書き用に整形及びEPUB、MOBIに変換します。
   ・変換したい小説のNコード、URL、タイトルもしくはIDを指定して下さい。
     IDは #{@opt.program_name} list を参照して下さい。
   ・一度に複数の小説を指定する場合は空白で区切って下さい。
-  ※-oオプションがない場合、[変換]小説名.txtが小説の保存フォルダに出力されます
+  ※-oオプションがない場合、[作者名] 小説名.txtが小説の保存フォルダに出力されます
   ・管理小説以外にもテキストファイルを変換出来ます。
     テキストファイルのファイルパスを指定します。
   ※複数指定した場合に-oオプションがあった場合、ファイル名に連番がつきます。
   ・MOBI化する場合は narou setting device=kindle をして下さい。
   ・device=kobo の場合、.kepub.epub を出力します。
 
-  Example:
+  Examples:
     narou convert n9669bk
     narou convert http://ncode.syosetu.com/n9669bk/
     narou convert 異世界迷宮で奴隷ハーレムを
@@ -59,14 +56,20 @@ module Command
       @opt.on("--no-strip", "MOBIをstripしない") {
         @options["no-strip"] = true
       }
+      @opt.on("--no-zip", "i文庫用のzipファイルを作らない") {
+        @options["no-zip"] = true
+      }
       @opt.on("--no-open", "出力時に保存フォルダを開かない") {
         @options["no-open"] = true
       }
       @opt.on("-i", "--inspect", "小説状態の調査結果を表示する") {
         @options["inspect"] = true
       }
-      @opt.on("-v", "--verbose", "AozoraEpub3, kindlegen の標準出力を全て表示します") {
+      @opt.on("-v", "--verbose", "AozoraEpub3, kindlegen の標準出力を全て表示する") {
         @options["verbose"] = true
+      }
+      @opt.on("--ignore-force", "settingコマンドのforce系設定を無視する") {
+        @options["ignore-force"] = true
       }
       @opt.separator <<-EOS
 
@@ -78,17 +81,7 @@ module Command
       EOS
     end
 
-    def load_local_settings
-      local_settings = LocalSetting.get["local_setting"]
-      local_settings.each do |name, value|
-        if name =~ /^convert\.(.+)$/
-          @options[$1] = value
-        end
-      end
-    end
-
     def execute(argv)
-      load_local_settings    # @opt.on 実行前に設定ロードしたいので super 前で実行する
       super
       if argv.empty?
         puts @opt.help
@@ -109,10 +102,13 @@ module Command
         end
       end
       @device = Narou.get_device
+      self.extend(@device.get_hook_module) if @device
+      hook_call(:change_settings)
       convert_novels(argv)
     end
 
     def convert_novels(argv)
+      tagname_to_ids(argv)
       argv.each.with_index(1) do |target, i|
         Helper.print_horizontal_rule if i > 1
         if @basename
@@ -129,22 +125,28 @@ module Command
             error "#{target} は存在しません"
             next
           end
-          res = NovelConverter.convert(target, @output_filename, @options["inspect"])
+          res = NovelConverter.convert(target, {
+                  output_filename: @output_filename,
+                  display_inspector: @options["inspect"],
+                  ignore_force: @options["ignore-force"],
+                })
+          @novel_data = Downloader.get_data_by_target(target)
         end
         next unless res
         @converted_txt_path = res[:converted_txt_path]
         @use_dakuten_font = res[:use_dakuten_font]
 
-        ebook_file = convert_txt_to_ebook_file
+        ebook_file = hook_call(:convert_txt_to_ebook_file)
         next if ebook_file.nil?
         if ebook_file
           copied_file_path = copy_to_converted_file(ebook_file)
           if copied_file_path
             puts copied_file_path.encode(Encoding::UTF_8) + " へコピーしました"
           end
-          if @device && @device.connecting? && File.extname(ebook_file) == @device.ebook_file_ext
+          if @device && @device.physical_support? &&
+             @device.connecting? && File.extname(ebook_file) == @device.ebook_file_ext
             if @argument_target_type == :novel
-              Send.execute_and_rescue_exit([@device.name, target])
+              Send.execute!([@device.name, target])
             else
               puts @device.name + "へ送信しています"
               copy_to_path = @device.copy_to_documents(ebook_file)
@@ -164,11 +166,19 @@ module Command
     rescue Interrupt
       puts
       puts "変換を中断しました"
-      exit 1
+      exit Narou::EXIT_ERROR_CODE
     end
 
+    #
+    # 直接指定されたテキストファイルを変換する
+    #
     def convert_txt(target)
-      return NovelConverter.convert_file(target, @enc, @output_filename, @options["inspect"])
+      return NovelConverter.convert_file(target, {
+               encoding: @enc,
+               output_filename: @output_filename,
+               display_inspector: @options["inspect"],
+               ignore_force: @options["ignore-force"],
+             })
     rescue ArgumentError => e
       if e.message =~ /invalid byte sequence in UTF-8/
         error "テキストファイルの文字コードがUTF-8ではありません。" +
@@ -185,6 +195,9 @@ module Command
       return nil
     end
 
+    #
+    # 変換された整形済みテキストファイルをデバイスに対応した書籍データに変換する
+    #
     def convert_txt_to_ebook_file
       return false if @options["no-epub"]
       # epub
@@ -223,6 +236,9 @@ module Command
       return mobi_path
     end
 
+    #
+    # convert.copy_to で指定されたディレクトリに書籍データをコピーする
+    #
     def copy_to_converted_file(src_path)
       copy_to_dir = @options["copy_to"]
       return nil unless copy_to_dir

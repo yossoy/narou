@@ -27,11 +27,15 @@ class SiteSetting
     @yaml_setting = YAML.load_file(path)
   end
 
+  def matched?(key)
+    @match_values[key]
+  end
+
   def multi_match(source, *keys)
     match_data = nil
     keys.each do |key|
       setting_value = self[key] or next
-      (setting_value.kind_of?(Array) ? setting_value : [setting_value]).each do |value|
+      [*setting_value].each do |value|
         match_data = source.match(/#{value}/m)
         if match_data
           @match_values[key] = value       # yamlのキーでもmatch_valuesに設定しておくが、
@@ -51,14 +55,19 @@ class SiteSetting
     end
   end
 
+  def is_container?(value)
+    value.kind_of?(Hash) || value.kind_of?(Array)
+  end
+
   def replace_group_values(key, option_values = {})
     dest = option_values[key] || @match_values[key] || @yaml_setting[key]
-    if dest.kind_of?(TrueClass) || dest.kind_of?(FalseClass)
+    return dest if is_container?(dest)
+    begin
+      result = dest.dup
+    rescue TypeError
       return dest
     end
-    return nil unless dest
     values = @yaml_setting.merge(@match_values).merge(option_values)
-    result = dest.dup
     result.gsub!(/\\\\k<(.+?)>/) do |match|
       value = values[$1]
       if value

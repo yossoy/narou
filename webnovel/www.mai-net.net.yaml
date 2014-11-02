@@ -1,0 +1,41 @@
+# ------------------------------------------------------------
+# 小説サイト定義
+name: Arcadia
+scheme: http
+domain: www.mai-net.net
+top_url: \\k<scheme>://\\k<domain>
+url: \\k<top_url>/bbs/sst/sst.php\?act=dump&cate=(?<category>.+?)&all=(?<ncode>\d+)
+encoding: UTF-8
+confirm_over18: no
+append_title_to_folder_name: yes
+title_strip_pattern: (【.+?】|\(.+?\)|（.+?）)
+
+# ------------------------------------------------------------
+# 書籍情報取得設定
+title: <font size=4 color=4444aa>(?<title>.+?)</font>
+author: "<tt>Name: (?<author>.+?)◆"
+story: ""
+
+# ------------------------------------------------------------
+# 目次取得設定
+toc_url: \\k<top_url>/bbs/sst/sst.php?act=dump&cate=\\k<category>&all=\\k<ncode>&n=0&count=1
+chapter: ""
+subtitles: |-
+  <td width="0%" style="font-size:60%">\[(?<index>\d+?)\]</td><td width="0%" style="font-size:60%"><b>
+  <a href="(?<href>.+?)#kiji">(?<subtitle>.+?)</a></b></td><td width="0%" style="font-size:60%">\[(.+?)\]</td><td width="0%" style="font-size:60%">\((?<subdate>.+?)\)</td>
+
+# subupdate がない場合、更新チェックは subdate を使うようになる
+subupdate: no
+
+404_message: エラー！恐らく存在しないスレッドを指定しています
+
+# ------------------------------------------------------------
+# 本文取得設定
+
+body_pattern: <blockquote><div style="line-height:1.5">(?<body>.+?)</div></blockquote>
+introduction_pattern: null
+postscript_pattern: null
+
+# ------------------------------------------------------------
+# 小説情報からパースするための設定
+novel_info_url: null

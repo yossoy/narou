@@ -9,6 +9,8 @@ require_relative "narou"
 class Template
   TEMPLATE_DIR = "template/"
 
+  class LoadError < StandardError; end
+
   #
   # テンプレートを元にファイルを作成
   #
@@ -22,7 +24,7 @@ class Template
       dest_filepath = File.join(dest_filepath, src_filename)
     end
     unless overwrite
-      return if File.exists?(dest_filepath)
+      return if File.exist?(dest_filepath)
     end
     result = get(src_filename, _binding) or return nil
     if Helper.os_windows?
@@ -44,12 +46,12 @@ class Template
     @@src_filename = src_filename
     [Narou.get_root_dir, Narou.get_script_dir].each do |dir|
       path = File.join(dir, TEMPLATE_DIR, src_filename + ".erb")
-      next unless File.exists?(path)
+      next unless File.exist?(path)
       src = open(path, "r:BOM|UTF-8") { |fp| fp.read }
       result = ERB.new(src, nil, "-").result(_binding)
       return result
     end
-    nil
+    raise LoadError, "テンプレートファイルが見つかりません。(#{src_filename}.erb)"
   end
 
   def self.invalid_templace_version?
@@ -57,7 +59,10 @@ class Template
   end
 
   #
-  # 書かれているテンプレートがどのバージョンのテンプレートを設定
+  # 書かれているテンプレートがどのバージョンのテンプレートかを設定
+  #
+  # テンプレート内部で使われる変数の変更があった場合に binary_version が上がる
+  # （変数の追加ではバージョンは上がらない。現在使われている変数の中身が変わった場合は上る）
   #
   def self.target_binary_version(version)
     @@src_version = version

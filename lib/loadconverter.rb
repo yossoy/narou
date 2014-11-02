@@ -9,6 +9,7 @@ require_relative "helper"
 BlankConverter = Class.new(ConverterBase) {}
 
 $converter_container = {}
+$converter_load_once = {}
 
 def converter(title, &block)
   $converter_container[title] = Class.new(ConverterBase, &block)
@@ -30,6 +31,8 @@ end
 # また、返却する IO オブジェクトはファイル先頭に seek しておく必要はない。
 # text_type は渡されるテキストがタイトルなのか、前書きなのか等の種別を判断する文字列が渡される。
 # 渡される文字列と意味：
+#  story         あらすじ
+#  chapter       章のタイトル
 #  subtitle      節のタイトル
 #  introduction  前書き
 #  body          本文
@@ -58,22 +61,27 @@ end
 # end
 def load_converter(title, archive_path)
   converter_path = File.join(archive_path, "converter.rb")
-  if File.exists?(converter_path)
+  if File.exist?(converter_path)
     if Helper.os_windows?
       # TODO: RubyのバグでUTF-8なパスをrequireが見えてない。修正されたら消す
-      require converter_path.encode(Encoding::Windows_31J)
+      unless $converter_load_once[archive_path]
+        eval(File.read(converter_path, encoding: Encoding::UTF_8),
+             binding, converter_path)
+        $converter_load_once[archive_path] = true
+      end
     else
       require converter_path
     end
   else
     return BlankConverter
   end
-  conv = $converter_container[title]
+  conv = $converter_container[title] || $converter_container[File.basename(archive_path)]
   if conv
     return conv
   else
+    title_for_converter = (title =~ /.txt\z/ ? title : File.basename(archive_path))
     error "converter.rbは見つかりましたが、`converter'で登録されていないようです。" +
-         "変換処理は converter \"#{title}\" として登録する必要があります"
+          "変換処理は converter \"#{title_for_converter.gsub('"', '\\"')}\" として登録する必要があります"
     return BlankConverter
   end
 end

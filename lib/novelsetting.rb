@@ -12,10 +12,10 @@ class NovelSetting
 
   attr_accessor :id, :author, :title, :archive_path, :replace_pattern
 
-  def self.load(target)
+  def self.load(target, ignore_force)
     archive_path = Downloader.get_novel_data_dir_by_target(target)
     if archive_path
-      setting = new(archive_path)
+      setting = new(archive_path, ignore_force)
       data = Downloader.get_data_by_target(target)
       setting.id = data["id"]
       setting.author = data["author"]
@@ -26,8 +26,9 @@ class NovelSetting
     end
   end
 
-  def initialize(archive_path)
+  def initialize(archive_path, ignore_force)
     @archive_path = File.expand_path(archive_path)
+    @ignore_force = ignore_force
     load_settings
     set_attribute
     load_replace_pattern
@@ -47,11 +48,13 @@ class NovelSetting
     ini = Ini.load_file(ini_path) rescue Ini.load("")
     force_settings = {}
     # 設定値を強制的に上書きするデータの読込
-    LocalSetting.get["local_setting"].each { |name, value|
-      if name =~ /^force\.(.+)$/
-        force_settings[$1] = value
-      end
-    }
+    unless @ignore_force
+      Inventory.load("local_setting", :local).each { |name, value|
+        if name =~ /^force\.(.+)$/
+          force_settings[$1] = value
+        end
+      }
+    end
     DEFAULT_SETTINGS.each do |element|
       name, value = element[:name], element[:value]
       if force_settings.include?(name)
@@ -93,10 +96,10 @@ class NovelSetting
   def load_replace_pattern
     @replace_pattern = []
     replace_txt_path = File.join(@archive_path, REPLACE_NAME)
-    if File.exists?(replace_txt_path)
+    if File.exist?(replace_txt_path)
       open(replace_txt_path, "r:BOM|UTF-8") do |fp|
         fp.each do |line|
-          line.strip!
+          line.sub!(/[\r\n]+\z/, "")
           next if line[0] == ";"    # コメント記号
           pattern = line.split("\t", 2)
           if pattern.length == 2 && pattern[0]
@@ -182,9 +185,9 @@ class NovelSetting
       help: "ルビ処理を有効に"
     },
     {
-      name: "enable_narou_illust",
+      name: "enable_illust",
       value: true,
-      help: "小説家になろうの挿絵タグを有効にする（false なら削除）"
+      help: "挿絵タグを有効にする（false なら削除）"
     },
     {
       name: "enable_transform_fraction",
@@ -193,13 +196,13 @@ class NovelSetting
     },
     {
       name: "enable_transform_date",
-      value: true,
+      value: false,
       help: "日付表記(20yy/mm/dd)を任意の形式(date_formatで指定)に変換する"
     },
     {
       name: "date_format",
       value: "%Y年%m月%d日",
-      help: "書式は http://goo.gl/gvJ5u を参考"
+      help: "書式は http://bit.ly/1m5e3w7 を参考"
     },
     {
       name: "enable_convert_horizontal_ellipsis",
@@ -215,6 +218,41 @@ class NovelSetting
       name: "to_page_break_threshold",
       value: 10,
       help: "ここで設定した値が `enable_convert_page_break` に反映される"
+    },
+    {
+      name: "enable_dakuten_font",
+      value: true,
+      help: "濁点フォントを使用するか。false の場合は縦中横による擬似表現を使用する"
+    },
+    {
+      name: "enable_display_end_of_book",
+      value: true,
+      help: "小説の最後に本を読み終わった表示をするかどうか"
+    },
+    {
+      name: "enable_add_date_to_title",
+      value: false,
+      help: "変換後の小説のタイトルに更新日の日付を付加するかどうか"
+    },
+    {
+      name: "title_date_format",
+      value: "(%-m/%-d)",
+      help: "enable_add_date_to_title で付与する日付のフォーマット。書式は http://bit.ly/1m5e3w7 を参照"
+    },
+    {
+      name: "title_date_align",
+      value: "right",
+      help: "enable_add_date_to_title で付与する日付の位置。left か right"
+    },
+    {
+      name: "enable_ruby_youon_to_big",
+      value: false,
+      help: "ルビの拗音(ぁ、ぃ等)を商業書籍のように大きくするかどうか"
+    },
+    {
+      name: "enable_pack_blank_line",
+      value: true,
+      help: "縦書きで読みやすいように空行を減らすかどうか"
     },
   ]
 end

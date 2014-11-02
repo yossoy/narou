@@ -17,25 +17,29 @@ module Command
     COMMAND_LIST
   end
 
+  # この順番がヘルプに表示される順番
   COMMAND_LIST = {
-    "download" => Download.new,
-    "update" => Update.new,
-    "list" => List.new,
-    "convert" => Convert.new,
-    "diff" => Diff.new,
-    "setting" => Setting.new,
-    "alias" => Alias.new,
-    "inspect"=> Inspect.new,
-    "send" => Send.new,
-    "folder" => Folder.new,
-    "browser" => Browser.new,
-    "remove" => Remove.new,
-    "freeze" => Freeze.new,
-    "help" => Help.new,
-    "version" => Version.new,
-    #"new" => New.new,
-    #"interactive" => Interactive.new,
-    "init" => Init.new
+    "download" => Download,
+    "update" => Update,
+    "list" => List,
+    "convert" => Convert,
+    "diff" => Diff,
+    "setting" => Setting,
+    "alias" => Alias,
+    "inspect"=> Inspect,
+    "send" => Send,
+    "folder" => Folder,
+    "browser" => Browser,
+    "remove" => Remove,
+    "freeze" => Freeze,
+    "tag" => Tag,
+    "web" => Web,
+    "flag" => Flag,
+    "mail" => Mail,
+    "backup" => Backup,
+    "help" => Help,
+    "version" => Version,
+    "init" => Init
   }
 
   # ショートカット定義

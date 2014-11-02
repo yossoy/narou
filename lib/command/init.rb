@@ -3,12 +3,12 @@
 # Copyright 2013 whiteleaf. All rights reserved.
 #
 
-require_relative "../globalsetting"
+require_relative "../inventory"
 require_relative "../commandbase"
 
 module Command
   class Init < CommandBase
-    def oneline_help
+    def self.oneline_help
       if Narou.already_init?
         "AozoraEpub3 の再設定を行います"
       else
@@ -31,7 +31,7 @@ module Command
   ・現在のフォルダを小説格納用フォルダとして初期化します。
   ・初期化されるまでは他のコマンドは使えません。
 
-  Example:
+  Examples:
     narou init
       EOS
     end
@@ -41,7 +41,7 @@ module Command
 
   ・AozoraEpub3 の再設定を行います。
 
-  Example:
+  Examples:
     narou init
       EOS
     end
@@ -61,13 +61,13 @@ module Command
     end
 
     def init_aozoraepub3(force = false)
-      @global_setting = GlobalSetting.get["global_setting"]
+      @global_setting = Inventory.load("global_setting", :global)
       if !force && @global_setting["aozoraepub3dir"]
         return
       end
       puts "<bold><green>AozoraEpub3の設定を行います</green></bold>".termcolor
       unless @global_setting["aozoraepub3dir"]
-        puts ("<red>" + "!!!WARNING!!!".center(70) + "</red>").termcolor
+        puts "<bold><red>#{"!!!WARNING!!!".center(70)}</red></bold>".termcolor
         puts "AozoraEpub3の構成ファイルを書き換えます。narouコマンド用に別途新規インストールしておくことをオススメします"
       end
       aozora_path = ask_aozoraepub3_path
@@ -78,7 +78,7 @@ module Command
       puts
       rewrite_aozoraepub3_files(aozora_path)
       @global_setting["aozoraepub3dir"] = aozora_path
-      GlobalSetting.get.save_settings("global_setting")
+      @global_setting.save
       puts "<bold><green>AozoraEpub3の設定を終了しました</green></bold>".termcolor
     end
 
@@ -99,11 +99,10 @@ module Command
       puts chuki_tag_path
       puts
       # ファイルコピー
-      src = ["AozoraEpub3.ini", "vertical_font.css", "DMincho.ttf", "xhtml_nav.vm"]
-      dst = ["AozoraEpub3.ini", "template/OPS/css_custom/vertical_font.css", "template/OPS/fonts/DMincho.ttf",
-             "template/OPS/xhtml/xhtml_nav.vm"]
+      src = ["AozoraEpub3.ini", "vertical_font.css", "DMincho.ttf"]
+      dst = ["AozoraEpub3.ini", "template/OPS/css_custom/vertical_font.css", "template/OPS/fonts/DMincho.ttf"]
       puts "(次のファイルをコピーor上書きしました)"
-      src.count.times do |i|
+      src.size.times do |i|
         src_full_path = File.join(Narou.get_preset_dir, src[i])
         dst_full_path = File.join(aozora_path, dst[i])
         FileUtils.install(src_full_path, dst_full_path)
@@ -115,7 +114,8 @@ module Command
       puts
       print "<bold><green>AozoraEpub3のあるフォルダを入力して下さい:</green></bold>\n(未入力でスキップ".termcolor
       if @global_setting["aozoraepub3dir"]
-        print "、:keep で前回と同じ設定"
+        puts "、:keep で現在と同じ場所を指定)"
+        print "(現在の場所:#{@global_setting["aozoraepub3dir"]}"
       end
       print ")\n>"
       while input = $stdin.gets.rstrip.gsub(/"/, "")
@@ -131,8 +131,8 @@ module Command
         when input == ""
           break
         end
-        print ("\n<bold><green>入力されたフォルダにAozoraEpub3がありません。" +
-               "もう一度入力して下さい:</green></bold>\n&gt;").termcolor
+        print "\n<bold><green>入力されたフォルダにAozoraEpub3がありません。" \
+              "もう一度入力して下さい:</green></bold>\n&gt;".termcolor
       end
       nil
     end

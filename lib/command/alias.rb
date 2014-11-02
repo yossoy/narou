@@ -3,10 +3,14 @@
 # Copyright 2013 whiteleaf. All rights reserved.
 #
 
-require_relative "../localsetting"
+require_relative "../inventory"
 
 module Command
   class Alias < CommandBase
+    def self.oneline_help
+      "小説のIDに紐付けた別名を作成します"
+    end
+
     def initialize
       super("[<alias_name>=<target> ...] [options]")
       @opt.separator <<-EOS
@@ -15,7 +19,7 @@ module Command
   ・<alias_name>にはアルファベット及び数字、アンダースコアが使用出来ます。
   ・<target>は他のコマンドで指定出来るものがそのまま使えますが、すでにダウンロード済みである必要があります。
 
-  Example:
+  Examples:
     narou alias --list
     narou alias musyoku=n9669bk
     narou alias harem=1
@@ -31,7 +35,7 @@ module Command
     end
 
     def output_aliases_list
-      aliases = LocalSetting.get["alias"]
+      aliases = Inventory.load("alias", :local)
       database = Database.instance
       aliases.each do |name, id|
         title = database[id]["title"] rescue "(すでに削除されています)"
@@ -45,7 +49,7 @@ module Command
         puts @opt.help
         return
       end
-      aliases = LocalSetting.get["alias"]
+      aliases = Inventory.load("alias", :local)
       argv.each_with_index do |arg, i|
         Helper.print_horizontal_rule if i > 0
         alias_name, target = arg.split("=", 2)
@@ -72,11 +76,7 @@ module Command
         aliases[alias_name] = id
         puts "#{alias_name} を #{title} の別名に設定しました"
       end
-      LocalSetting.get.save_settings
-    end
-
-    def oneline_help
-      "小説のIDに紐付けた別名を作成します"
+      aliases.save
     end
   end
 end

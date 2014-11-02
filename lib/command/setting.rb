@@ -1,14 +1,14 @@
 # -*- coding: utf-8 -*-
 #
+# Copyright 2013 whiteleaf. All rights reserved.
 #
 
-require_relative "../localsetting"
-require_relative "../globalsetting"
+require_relative "../inventory"
 require_relative "../novelsetting"
 
 module Command
   class Setting < CommandBase
-    def oneline_help
+    def self.oneline_help
       "各コマンドの設定を変更します"
     end
 
@@ -31,7 +31,8 @@ module Command
       @opt.separator <<-EOS
 
   ・各コマンドの設定の変更が出来ます。
-  ・Global な設定はユーザープロファイルに保存され、すべての narou コマンドで使われます。
+  ・Global な設定はユーザープロファイルに保存され、すべての narou コマンドで使われます
+  ・下の一覧は一部です。すべてを確認するには -a オプションを付けて確認して下さい
 
   Local Variable List:
         <name>           <value>              説明
@@ -43,14 +44,14 @@ module Command
 
       @opt.separator <<-EOS
 
-  Example:
+  Examples:
     narou setting --list
     narou setting convert.no-open=true
     narou setting convert.no-epub=   # 右辺に何も書かないとその設定を削除できる
     narou setting convert.copy_to=C:/dropbox/mobi
     narou s convert.copy_to="C:\\Documents and Settings\\user\\epub"
 
-  Optioins:
+  Options:
       EOS
       @opt.on("-l", "--list", "現在の設定値を確認する") {
         output_setting_list
@@ -144,8 +145,8 @@ module Command
 
     def output_setting_list
       settings = {
-        local: LocalSetting.get["local_setting"],
-        global: GlobalSetting.get["global_setting"]
+        local: Inventory.load("local_setting", :local),
+        global: Inventory.load("global_setting", :global)
       }
       settings.each do |scope, scoped_settings|
         puts "[#{scope.capitalize} Variables]"
@@ -165,9 +166,11 @@ module Command
         return
       end
       settings = {
-        local: LocalSetting.get["local_setting"],
-        global: GlobalSetting.get["global_setting"]
+        local: Inventory.load("local_setting", :local),
+        global: Inventory.load("global_setting", :global)
       }
+      device = Narou.get_device
+      self.extend(device.get_hook_module) if device
       argv.each do |arg|
         name, value = arg.split("=", 2).map(&:strip)
         if name == ""
@@ -184,8 +187,7 @@ module Command
           next
         end
         if value == ""
-          settings[scope].delete(name)
-          puts "#{name} の設定を削除しました"
+          hook_call(:modify_settings, settings[scope], name, nil)
           next
         end
         begin
@@ -194,11 +196,44 @@ module Command
           error e.message
           next
         end
-        settings[scope][name] = casted_value
-        puts "#{name} を #{casted_value} に設定しました"
+        hook_call(:modify_settings, settings[scope], name, casted_value)
       end
-      LocalSetting.get.save_settings("local_setting")
-      GlobalSetting.get.save_settings("global_setting")
+      settings[:local].save
+      settings[:global].save
+    end
+
+    def modify_settings(scoped_settings, name, value)
+      if value.nil?
+        scoped_settings.delete(name)
+        puts "#{name} の設定を削除しました"
+      else
+        scoped_settings[name] = value
+        puts "#{name} を #{value} に設定しました"
+      end
+      if name == "device" && value
+        modify_settings_when_device_changed(scoped_settings)
+      end
+    end
+
+    def modify_settings_when_device_changed(settings)
+      device = Device.create(settings["device"])
+      message = StringIO.new
+      device.get_relative_variables.each do |name, value|
+        if value.nil?
+          settings.delete(name)
+          message.puts "  <bold><red>← #{name} が削除されました</red></bold>".termcolor
+        elsif settings[name].nil? || settings[name] != value
+          settings[name] = value
+          message.puts "  <bold><green>→ #{name} が #{value} に変更されました</green></bold>".termcolor
+        end
+      end
+      if message.length > 0
+        puts "端末を#{device.display_name}に指定したことで、以下の関連設定が変更されました"
+        puts message.string
+      end
+    rescue Device::UnknownDevice => e
+      error e.message
+      puts "設定できるのは #{Device::DEVICES.keys.join(", ")} です"
     end
 
     def get_variable_list_strings(scope)
@@ -230,23 +265,30 @@ module Command
     SETTING_VARIABLES = {
       local: {
         # 変数名 => [受け付ける型, 説明(, 不可視化フラグ)]
-        "convert.no-epub" => [:boolean, "EPUB変換を無効にするかどうか"],
-        "convert.no-mobi" => [:boolean, "MOBI変換を無効にするかどうか"],
-        "convert.no-strip" => [:boolean, "MOBIのstripを無効にするかどうか\n" +
+        "convert.no-epub" => [:boolean, "EPUB変換を無効にするか"],
+        "convert.no-mobi" => [:boolean, "MOBI変換を無効にするか"],
+        "convert.no-strip" => [:boolean, "MOBIのstripを無効にするか\n" +
                                          " " * 6 + "※注意：KDP用のMOBIはstripしないでください"],
+        "convert.no-zip" => [:boolean, "i文庫用のzipファイルを作らない"],
         "convert.no-open" => [:boolean, "変換終了時に保存フォルダを開かない"],
         "convert.copy_to" => [:directory, "変換したらこのフォルダにコピーする\n" +
                                           " " * 6 + "※注意：存在しないフォルダだとエラーになる"],
         "convert.inspect" => [:boolean, "常に変換時に調査結果を表示するか"],
         "download.interval" => [:float, "各話DL時に指定した秒数待機する。デフォルト0"],
+        "download.wait-steps" => [:integer, "この値で指定した話数ごとにウェイトを入れる\n" +
+                                       " " * 6 + "※注意：11以上を設定してもなろうの場合は10話ごとにウェイトが入ります"],
+        "send.without-freeze" => [:boolean, "`全話'送信時に凍結された小説は対象外に"],
+        "update.strong" => [:boolean, "更新漏れが無いように改稿日の分は必ずDLする"],
         "device" => [:string, "変換、送信対象の端末(sendの--help参照)"],
-        
+        "multiple-delimiter" => [:string, "--multiple指定時の区切り文字"],
       },
       global: {
         "aozoraepub3dir" => [:directory, "AozoraEpub3のあるフォルダを指定", INVISIBLE],
         "difftool" => [:string, "Diffで使うツールのパスを指定する"],
         "difftool.arg" => [:string, "difftoolで使う引数を設定(オプション)"],
-        "no-color" => [:boolean, "表示内容に色を付けない"],
+        "no-color" => [:boolean, "カラー表示を無効にする"],
+        "server-port" => [:integer, "WEBサーバ起動時のポート"],
+        "server-bind" => [:string, "WEBサーバのホスト制限(デフォ:localhost)", INVISIBLE],
         "over18" => [:boolean, "", INVISIBLE],
       }
     }

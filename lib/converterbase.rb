@@ -1,4 +1,4 @@
-# -*- coding: utf-8 -*-
+﻿# -*- coding: utf-8 -*-
 #
 # Copyright 2013 whiteleaf. All rights reserved.
 #
@@ -6,18 +6,24 @@
 require "stringio"
 require "date"
 require "uri"
+require "nkf"
 require_relative "progressbar"
+require_relative "inspector"
 
 class ConverterBase
   KANJI_NUM = "〇一二三四五六七八九"
+  ENGLISH_SENTENCES_CHARACTERS = /[\w.,!?'" &:;_-]+/
+  ENGLISH_SENTENCES_MIN_LENGTH = 8   # この文字数以上アルファベットが続くと半角のまま
 
   attr_reader :use_dakuten_font
 
   def before(io, text_type)
     data = io.string
-    convert_page_break(data) if @text_type == "body"
-    data.gsub!("\n\n", "\n")
-    data.gsub!("\n\n\n", "\n\n")
+    convert_page_break(data) if @text_type == "body" || @text_type == "textfile"
+    if @text_type != "story" && @setting.enable_pack_blank_line
+      data.gsub!("\n\n", "\n")
+      data.gsub!(/(^\n){3}/m, "\n\n")   # 改行のみの行３つを２つに削減
+    end
     io
   end
 
@@ -44,6 +50,7 @@ class ConverterBase
     @illust_chuki_list = []
     @kanji_num_list = {}
     @num_and_comma_list = {}
+    @force_indent_special_chapter_list = {}
     @in_author_comment_block = nil
   end
 
@@ -72,7 +79,8 @@ class ConverterBase
   def convert_numbers(data)
     # 小数点を・に
     data.gsub!(/([\d０-９#{KANJI_NUM}]+?)[\.．]([\d０-９#{KANJI_NUM}]+?)/, "\\1・\\2")
-    if @setting.enable_convert_num_to_kanji && @text_type != "subtitle"
+    if @setting.enable_convert_num_to_kanji &&
+       @text_type != "subtitle" && @text_type != "chapter" && @text_type != "story"
       num_to_kanji(data)
     else
       hankaku_num_to_zenkaku_num(data)
@@ -182,10 +190,11 @@ class ConverterBase
   def convert_kanji_num_with_unit(data, lower_digit_zero = 0)
     data.gsub!(/([#{KANJI_NUM}十百千万億兆京]+)/) do |match|
       total = kanji_num_to_integer($1)
+      next match if total.to_s.length > KANJI_NUM_UNITS_DIGIT["京"] + 4
       m1 = total.to_s.tr("0-9", KANJI_NUM)
       if m1 =~ /〇{#{lower_digit_zero},}$/
         digits = m1.reverse.scan(/.{1,4}/).map(&:reverse).reverse   # 下の桁から4桁ずつ区切った配列を作成
-        keta = digits.count - 1
+        keta = digits.size - 1
         digits.map.with_index { |nums, keta_i|
           four_digit_num = nums.scan(/./).map.with_index { |d, di|
             next "" if d == "〇"
@@ -211,6 +220,8 @@ class ConverterBase
     end
   end
 
+  RECONVERT_KANJI_TO_NUM_PATTERN_UNIT = "％㎜㎝㎞㎎㎏㏄㎡㎥"
+
   #
   # アラビア数字を使うべきところはアラビア数字に戻す
   #
@@ -219,7 +230,7 @@ class ConverterBase
     data.gsub!(/([Ａ-Ｚａ-ｚ])([#{KANJI_NUM}・～]+)/) do   # ｖｅｒ１・０１ のようなパターンも許容する
       $1 + $2.tr(KANJI_NUM, "０-９")
     end
-    data.gsub!(/([#{KANJI_NUM}・～]+)([Ａ-Ｚａ-ｚ])/) do
+    data.gsub!(/([#{KANJI_NUM}・～]+)([Ａ-Ｚａ-ｚ#{RECONVERT_KANJI_TO_NUM_PATTERN_UNIT}])/) do
       $1.tr(KANJI_NUM, "０-９") + $2
     end
   end
@@ -236,7 +247,7 @@ class ConverterBase
     target_num = "\d０-９#{KANJI_NUM}十百千万億兆京垓"
     data.gsub!(/[#{target_num}\/／]+/) do |match|
       numerics = match.split(/[\/／]/)
-      case numerics.count
+      case numerics.size
       when 2
         # 分数
         if @setting.enable_transform_fraction
@@ -305,7 +316,8 @@ class ConverterBase
   # 特定の表現・記号を変換していく
   #
   def convert_special_characters(data)
-    convert_aozora_special_charactoers(data)
+    stash_kome(data)
+    convert_double_angle_quotation_to_gaiji(data)   # 最初からギュメなのはルビ対象外なので外字注記に
     symbols_to_zenkaku(data)
     convert_tatechuyoko(data)
     convert_novel_rule(data)
@@ -313,15 +325,27 @@ class ConverterBase
   end
 
   #
-  # 記号を全角に変換
+  # 半角カナと ｢｣｡､･ 等を全角に変換
+  #
+  def hankakukana_to_zenkakukana(data)
+    data.replace(NKF.nkf("-wWX", data).tr("\u2014", "―"))
+  end
+
+  # ミュート（ノノカギ）化する記号定義
+  SINGLE_MINUTE_FAMILY = %!‘’'!
+  DOUBLE_MINUTE_FAMILY = %!“”〝〟"!
+
+  #
+  # 半角記号を全角に変換
   #
   def symbols_to_zenkaku(data)
-    data.tr!("“”‘’〝〟", %!""''""!)
-    data.gsub!(/"([^"\n]+)"/, "〝\\1〟")
-    data.gsub!(/'([^'\n]+)'/, "〝\\1〟")   # MEMO: シングルミュート(ノノカギ)を表示出来るフォントはほとんど無い
-    data.tr!("-=+/*《》'\"%$#&!?､<>＜＞()|‐,._;:[]",
-             "－＝＋／＊≪≫’”％＄＃＆！？、〈〉〈〉（）｜－，．＿；：［］")
+    data.gsub!(/[#{SINGLE_MINUTE_FAMILY}]([^"\n]+)[#{SINGLE_MINUTE_FAMILY}]/, "〝\\1〟")
+    # MEMO: シングルミュートを表示出来るフォントはほとんど無いためダブルにする
+    data.gsub!(/[#{DOUBLE_MINUTE_FAMILY}]([^"\n]+)[#{DOUBLE_MINUTE_FAMILY}]/, "〝\\1〟")
+    data.tr!("-=+/*《》'\"%$#&!?<>＜＞()|‐,._;:[]",
+             "－＝＋／＊≪≫’”％＄＃＆！？〈〉〈〉（）｜－，．＿；：［］")
     data.gsub!("\\", "￥")
+    data
   end
 
   #
@@ -383,10 +407,16 @@ class ConverterBase
   end
 
   #
-  # 特殊な記号を外字注記に変換
+  # 先に外字注記にしてしまうと border_symbol? 等で困るので、あとで外字注記化出来るようにする
   #
-  def convert_aozora_special_charactoers(data)
-    data.gsub!("※", "※※")   # 外字注記表記だと border_symbol? 等で困るのであとで外字注記化する
+  def stash_kome(data)
+    data.gsub!("※", "※※")
+  end
+
+  #
+  # ギュメを二重山括弧（の外字）に変換
+  #
+  def convert_double_angle_quotation_to_gaiji(data)
     data.gsub!("≪", "※［＃始め二重山括弧］")
     data.gsub!("≫", "※［＃終わり二重山括弧］")
   end
@@ -394,7 +424,7 @@ class ConverterBase
   #
   # ※の外字注記化
   #
-  # convert_aozora_special_charactoers で2つにしておいた※を外字注記化する
+  # stash_kome で2つにしておいた※を外字注記化する
   #
   def rebuild_kome_to_gaiji(data)
     data.gsub!("※※", "※［＃米印、1-2-8］")
@@ -408,7 +438,7 @@ class ConverterBase
   def convert_dakuten_char_to_font(data)
     data.gsub!(/(.)[゛ﾞ]/) do
       m1 = $1
-      if m1 =~ /[ぁ-んァ-ヶι]/
+      if m1 =~ /[ぁ-んァ-ヶι]/ && @setting.enable_dakuten_font
         @use_dakuten_font = true
         "［＃濁点］#{m1}［＃濁点終わり］"
       else
@@ -442,6 +472,8 @@ class ConverterBase
   #
   # force : 強制的に全アルファベットを全角にするか？
   #         false の場合、英文章（半角スペースで区切られた2単語以上）を半角のままにする
+  #         英文の定義： 1. 半角スペースで区切られた２単語以上の文章、
+  #                      2. 一定以上の長さの一文字以上アルファベットを含む文章
   #
   def alphabet_to_zenkaku(data, force = false)
     if force
@@ -449,10 +481,11 @@ class ConverterBase
         match.tr("a-zA-Z", "ａ-ｚＡ-Ｚ")
       end
     else
-     data.gsub!(/[\w.,!?' ]+/) do |match|
-        if match.split(" ").count > 1
+      data.gsub!(ENGLISH_SENTENCES_CHARACTERS) do |match|
+        if match.split(" ").size >= 2 \
+           || (match.length >= ENGLISH_SENTENCES_MIN_LENGTH && match.match(/[a-z]/i))
           @english_sentences << match
-          "［＃英文＝#{@english_sentences.count - 1}］"
+          "［＃英文＝#{@english_sentences.size - 1}］"
         else
           match.tr("a-zA-Z", "ａ-ｚＡ-Ｚ")
         end
@@ -490,7 +523,7 @@ class ConverterBase
   end
 
   #
-  # 全角数字を半角アラビア数字に
+  # 全角数字(漢数字含む)を半角アラビア数字に
   #
   def zenkaku_num_to_hankaku_num(num)
     num.tr("０-９#{KANJI_NUM}", "0-90-9")
@@ -515,8 +548,9 @@ class ConverterBase
     data
   end
   
-  HALF_INDENT_TARGET = /^[ 　\t]*([〔「『(（【〈《≪〝])/
+  HALF_INDENT_TARGET = /^[ 　\t]*((?:[〔「『(（【〈《≪〝])|(?:※［＃始め二重山括弧］))/
   FULL_INDENT_TARGET = /^[ 　\t]*(――)/
+  AUTO_INDENT_IGNORE_INDENT_CHAR = Inspector::IGNORE_INDENT_CHAR.sub("・", "")
   #
   # 行頭かぎ括弧(等)に二分アキを追加する
   #
@@ -524,7 +558,13 @@ class ConverterBase
   # kindle paperwhite で鍵括弧のインデントがおかしいことへの対応
   #
   def half_indent_bracket(data)
-    data.gsub!(HALF_INDENT_TARGET, "［＃二分アキ］\\1") if @setting.enable_half_indent_bracket
+    data.gsub!(HALF_INDENT_TARGET) do
+      if @setting.enable_half_indent_bracket
+        "［＃二分アキ］#{$1}"
+      else
+        $1
+      end
+    end
   end
 
   #
@@ -536,28 +576,57 @@ class ConverterBase
   def auto_indent(data)
     data.gsub!(FULL_INDENT_TARGET, "　\\1")
     if @setting.enable_auto_indent && @inspector.inspect_indent(data)
-      data.gsub!(/^([^#{Inspector::IGNORE_INDENT_CHAR}])/) do
-        $1 == " " || $1 == "　" ? "　" : "　#{$1}"
+      data.gsub!(/^([^#{AUTO_INDENT_IGNORE_INDENT_CHAR}])/) do
+        # 行頭に三点リーダーの代わりに連続中黒（・・・）が来た場合の対策
+        # https://github.com/whiteleaf7/narou/issues/35
+        # 行頭に中黒１個だけの場合はよくある表現なので字下げしない
+        if $1 == "・" && $'[0] != "・"
+          "・"
+        else
+          $1 == " " || $1 == "　" ? "　" : "　#{$1}"
+        end
       end
     end
   end
 
   #
-  # 章見出しっぽい文字列を字下げして前後に空行を入れる
+  # 章見出しっぽい文字列を字下げする
   #
-  # TODO: 半角数字の縦中横注記をいれた影響で、2桁の半角数字が認識されてないのをどうにかする
-  #
-  def force_indent_special_chapter(line)
-    line.sub!(/^(?:[ 　\t]|［＃二分アキ］)*([－―<＜〈-]*)([0-9０-９#{KANJI_NUM}]+)([－―>＞〉-]*)$/) do
-      @request_insert_blank_next_line = true
+  def force_indent_special_chapter(data)
+    return unless @text_type == "body" || @text_type == "textfile"
+    @@count_of_rebuild_container ||= 0
+    data.gsub!(/^[ 　\t]*([－―<＜〈-]*)([0-9０-９#{KANJI_NUM}]{1,3})([－―>＞〉-]*)$/) do
       top, chapter, bottom = $1, $2, $3
-      if top != "" && "―－-".include?(top)
+      if top != "" && "―－-".include?(top)   # include?は空文字("")だとtrueなのでチェック必須
         top = "― "
         bottom = " ―"
       end
-      (blank_line?(@before_line) ? "" : "\n") + "　　　［＃ゴシック体］" + \
-      top + hankaku_num_to_zenkaku_num(zenkaku_num_to_hankaku_num(chapter)) + bottom + "［＃ゴシック体終わり］"
+      str = "　　　［＃ゴシック体］#{top}"
+      str += hankaku_num_to_zenkaku_num(chapter.tr("０-９", "0-9"))
+      str += "#{bottom}［＃ゴシック体終わり］"
+      # 前後に空行を入れたいが、それは行処理ループ中に行う
+      symbols_to_zenkaku(str)
+      index = @@count_of_rebuild_container += 1
+      @force_indent_special_chapter_list[convert_numbers(index.to_s)] = str
+      "［＃章見出しっぽい文＝#{index}］"
     end
+  end
+
+  def rebuild_force_indent_special_chapter(data)
+    data.gsub!(/［＃章見出しっぽい文＝(.+?)］/) do
+      @force_indent_special_chapter_list[$1]
+    end
+  end
+
+  def insert_blank_before_line_and_behind_to_special_chapter(line)
+    result = ""
+    if line =~ /［＃章見出しっぽい文＝/
+      unless blank_line?(@before_line)
+        result << "\n"
+      end
+      @request_insert_blank_next_line = true
+    end
+    line.sub!(/\A/, result)
   end
 
   #
@@ -765,13 +834,13 @@ class ConverterBase
   # 小説家になろうのルビ対策
   #
   def narou_ruby(data)
-    # 《》なルビの対処
-    data.gsub!(/(.+?)≪(.+?)≫/) do |match|
-      to_ruby(match, $1, $2, ["≪", "≫"])
-    end
-    # （）なルビの対処
-    if @text_type != "subtitle"
-      data.gsub!(/(.+?)（([ぁ-んァ-ヶーゝゞ・Ａ-Ｚａ-ｚA-Za-z　]{,20})）/) do |match|
+    if @text_type != "subtitle" && @text_type != "chapter"
+      # 《》なルビの対処
+      data.gsub!(/(.+?)≪([^≪]+?)≫/) do |match|
+        to_ruby(match, $1, $2, ["≪", "≫"])
+      end
+      # （）なルビの対処
+      data.gsub!(/(.+?)（([ぁ-んァ-ヶーゝゞ・Ａ-Ｚａ-ｚA-Za-z 　]{,20})）/) do |match|
         to_ruby(match, $1, $2, ["（", "）"])
       end
     end
@@ -785,11 +854,22 @@ class ConverterBase
     char =~ /[#{CHARACTER_OF_RUBY}]/
   end
 
-  def sesame(str, ten)
+  def is_sesame?(str, ten, last_char)
+    ten =~ /^[・、]+$/ && (str.include?("｜") || object_of_ruby?(last_char))
+  end
+
+  def sesame(str)
     if str.include?("｜")
       str.sub("｜", "［＃傍点］") + "［＃傍点終わり］"
     else
-      str.insert(-(ten.length + 1), "［＃傍点］") + "［＃傍点終わり］"
+      str.sub(/([#{CHARACTER_OF_RUBY}　]+)$/) {
+        match_target = $1
+        if match_target =~ /^(　+)/
+          "#{$1}［＃傍点］#{match_target[$1.length..-1]}"
+        else
+          "［＃傍点］#{match_target}"
+        end
+      } + "［＃傍点終わり］"
     end
   end
 
@@ -803,24 +883,36 @@ class ConverterBase
     when last_char == "｜"
       # 直前に｜がある場合ルビ化は抑制される
       "#{m1[0...-1]}#{openclose_symbols[0]}#{m2}#{openclose_symbols[1]}"
-    when m2 =~ /^・+$/
-      # ルビが・だけの場合、傍点と判断
-      sesame(m1, m2)
+    when is_sesame?(m1, m2, last_char)
+      sesame(m1)
     when m1.include?("｜")
       "#{m1.sub(/｜([^｜]*)$/, "［＃ルビ用縦線］\\1")}《#{m2}》"
     when object_of_ruby?(last_char)
       # なろうのルビ対象文字を辿って｜を挿入する（青空文庫となろうのルビ仕様の差異吸収のため）
-      m1.gsub(/([#{CHARACTER_OF_RUBY}　]+)$/) {
+      # 空白もルビ対象文字に含むのはなろうの仕様である
+      m1.sub(/([#{CHARACTER_OF_RUBY} 　]+)$/) {
         match_target = $1
         if match_target =~ /^(　+)/
           "#{$1}［＃ルビ用縦線］#{match_target[$1.length..-1]}"
         else
           "［＃ルビ用縦線］#{match_target}"
         end
-      } + "《#{m2}》"
+      } + "《#{ruby_youon_to_big(m2)}》"
     else
       match
     end
+  end
+
+  #
+  # ルビの拗音(ぁ、ぃ等)を商業書籍のように大きくする
+  #
+  def ruby_youon_to_big(ruby)
+    result = ruby
+    if @setting.enable_ruby_youon_to_big
+      result = ruby.tr("ぁぃぅぇぉゃゅょゎっァィゥェォャュョヮッヵヶ",
+                       "あいうえおやゆよわつアイウエオヤユヨワツカケ")
+    end
+    result
   end
 
   #
@@ -834,33 +926,28 @@ class ConverterBase
   # URL っぽい文字列を一旦別のIDに置き換えてあとで復元することで、変換処理の影響を受けさせない
   #
   def replace_url(data)
-    data.gsub!(URI.regexp) do |match|
+    data.gsub!(URI.regexp(%w(http https))) do |match|
       @url_list << match
-      "［＃ＵＲＬ＝#{@url_list.count - 1}］"
+      "［＃ＵＲＬ＝#{@url_list.size - 1}］"
     end
   end
 
   def rebuild_url(data)
     @url_list.each_with_index do |url, id|
       data.sub!("［＃ＵＲＬ＝#{convert_numbers(id.to_s)}］",
-                "<a href=\"#{url}\">#{url}</a>")
+                "<a href=\"#{Helper.ampersand_to_entity(url)}\">#{url}</a>")
     end
   end
 
   #
-  # なろうの挿絵タグを挿絵注釈に変換
+  # 挿絵タグやimgタグ等を挿絵注釈に変換
   # 挿絵画像が存在しなければダウンロードして保存する
   #
   def replace_illust_tag(data)
-    data.gsub!(/^(<i[0-9]+\|[0-9]+>)\n?/m) do
-      next "" unless @setting.enable_narou_illust
-      chuki = @illustration.get($1)
-      if chuki
-        @illust_chuki_list << chuki
-        "［＃挿絵＝#{@illust_chuki_list.count - 1}］\n"
-      else
-        ""
-      end
+    @illustration.scanner(data) do |chuki|
+      next "" unless @setting.enable_illust
+      @illust_chuki_list << chuki
+      "［＃挿絵＝#{@illust_chuki_list.size - 1}］\n"
     end
   end
 
@@ -874,8 +961,9 @@ class ConverterBase
   # 中黒(・)や句読点を並べて三点リーダーもどきにしているのを三点リーダーに変換
   #
   def convert_horizontal_ellipsis(data)
-    return if !@setting.enable_convert_horizontal_ellipsis || @text_type == "subtitle"
-    %w(・ 。 、).each do |char|
+    return if !@setting.enable_convert_horizontal_ellipsis || \
+              @text_type == "subtitle" || @text_type == "chapter"
+    %w(・ 。 、 ．).each do |char|
       data.gsub!(/#{char}{3,}/) do |match|
         pre_char, post_char = $`[-1], $'[0]
         if pre_char == "―" || post_char == "―"
@@ -906,21 +994,30 @@ class ConverterBase
       "［＃３字下げ］［＃ここから中見出し］#{midashi_title}［＃ここで中見出し終わり］"
     end
 
+    def calc_cr_count(str)
+      head_cr_count = str.index(/[^\n]/)
+      head_cr_count > 2 ? 2 : head_cr_count
+    end
+
+    # 実際に見出しを付与する
     data.gsub!(/［＃改ページ］\n(.+?)\n/) do |match|
       m1 = $1
       rest = $'
+      # 前書きがある場合は今回は保留して、次の処理で見出しを付与する
       if $1 =~ /#{AUTHOR_COMMENT_CHUKI[:introduction][:open]}/
         match
       else
         # 見出しの次の行が空行ではない場合空行を追加する
-        add_tail = rest =~ /\A$/ ? "" : "\n\n"
+        add_tail = "\n" * (2 - calc_cr_count(rest))
+        # 見出しと本文の間には空行を２行挟む
         "［＃改ページ］\n#{midashi(m1)}\n#{add_tail}"
       end
     end
+    # 前書きがある場合は、前書き→見出しの順番を見出し→前書きに入れ替えて置換
     data.gsub!(/(［＃改ページ］\n)(#{AUTHOR_COMMENT_CHUKI[:introduction][:open]}.+?#{AUTHOR_COMMENT_CHUKI[:introduction][:close]}\n)(.+?\n)/m) do
       m1, m2, m3 = $1, $2, $3
       add_tail = $' =~ /\A$/ ? "" : "\n"
-      "#{m1 + midashi(m3) + m2}#{add_tail}"   # 前書き→見出しの順番を見出し→前書きに入れ替えて置換
+      "#{m1 + midashi(m3) + m2}#{add_tail}"
     end
   end
 
@@ -957,16 +1054,25 @@ class ConverterBase
   #
   def convert_page_break(data)
     if @setting.enable_convert_page_break
-      threshold = @setting.to_page_break_threshold + 1
+      threshold = @setting.to_page_break_threshold
       # `改ページ' を使うと見出し付与等で混乱するので自動生成したものは区別する
-      data.gsub!(/\n{#{threshold},}/, "\n［＃改頁］\n")
+      data.gsub!(/(^\n){#{threshold},}/, "［＃改頁］\n")
     end
+  end
+
+  #
+  # 表示上化けてしまうゴミ削除
+  #
+  def delete_dust_char(data)
+    data.gsub!("︎", "")
+    data.gsub!("︎", "")
   end
 
   #
   # 小説データ全体に対して施す変換
   #
   def convert_for_all_data(data)
+    hankakukana_to_zenkakukana(data)
     auto_join_in_brackets(data)
     auto_join_line(data) if @setting.enable_auto_join_line
     erase_comments_block(data)
@@ -975,9 +1081,10 @@ class ConverterBase
     replace_narou_tag(data)
     convert_rome_numeric(data)
     alphabet_to_zenkaku(data, @setting.enable_alphabet_force_zenkaku)
+    force_indent_special_chapter(data)
     convert_numbers(data)
     exception_reconvert_kanji_to_num(data)
-    if @setting.enable_convert_num_to_kanji && @text_type != "subtitle" \
+    if @setting.enable_convert_num_to_kanji && @text_type != "subtitle" && @text_type != "chapter" \
        && @setting.enable_kanji_num_with_units
       convert_kanji_num_with_unit(data, @setting.kanji_num_with_units_lower_digit_zero)
     end
@@ -986,10 +1093,6 @@ class ConverterBase
     convert_special_characters(data)
     convert_fraction_and_date(data)
     modify_kana_ni_to_kanji_ni(data)
-    if @text_type == "body" || @text_type == "textfile"
-      half_indent_bracket(data)
-      auto_indent(data)
-    end
     convert_dakuten_char_to_font(data)
   end
 
@@ -1014,7 +1117,8 @@ class ConverterBase
   #
   # 変換処理本体
   #
-  # @text_type: 渡されるテキストの種類。subtitle, introduction, body, postscript, textfile のどれか
+  # @text_type: 渡されるテキストの種類。
+  #             subtitle, introduction, body, postscript, textfile, chapter, story
   #
   def convert_main(io)
     @write_fp = StringIO.new
@@ -1024,8 +1128,10 @@ class ConverterBase
     when "postscript"
       return @write_fp if @setting.enable_erase_postscript
     end
+    title_and_author = nil
     if @text_type == "textfile"
-      @write_fp.puts(io.gets + io.gets)   # タイトル・著者名スキップ
+      # タイトル・著者名スキップ
+      title_and_author = io.gets + io.gets
       data = io.read
     else
       data = io.read
@@ -1049,10 +1155,11 @@ class ConverterBase
         if @request_insert_blank_next_line
           outputs unless blank_line?(line)
           @request_insert_blank_next_line = false
+          @before_line = ""
         end
         process_author_comment(line) if @text_type == "textfile"
+        insert_blank_before_line_and_behind_to_special_chapter(line)
         insert_blank_line_to_border_symbol(line)
-        force_indent_special_chapter(line)
 
         outputs(line)
         unless @delay_outputs_buffer.empty?
@@ -1082,12 +1189,24 @@ class ConverterBase
     rebuild_english_sentences(data)
     rebuild_hankaku_num_and_comma(data)
     rebuild_kome_to_gaiji(data)
+    rebuild_force_indent_special_chapter(data)
+    if @text_type == "body" || @text_type == "textfile"
+      half_indent_bracket(data)
+      auto_indent(data)
+    end
     # 再構築された文章にルビがふられる可能性を考慮して、
     # この位置でルビの処理を行う
     narou_ruby(data) if @setting.enable_ruby
     # 三点リーダーの変換は、ルビで圏点として・・・を使っている場合を考慮して、ルビ処理後にする
     convert_horizontal_ellipsis(data)
-    data.strip!
+    # ルビ化されなくて残ったギュメを二重山括弧（の外字）に変換
+    convert_double_angle_quotation_to_gaiji(data)
+    delete_dust_char(data)
+    if title_and_author
+      puts title_and_author
+      data.replace(title_and_author + data)
+    end
+    data.rstrip!
     progressbar.clear if @text_type == "textfile"
     @write_fp
   end

@@ -1,4 +1,4 @@
-#
+﻿#
 # My Project (Narou.rb)
 #
 .backup/
@@ -13,12 +13,20 @@ MEMO.txt
 .narou/
 *.zip
 debug
+.DS_Store
+*.swp
+*.swo
+*.un~
+*.orig
+*.patch
+trash/
+.ruby-version
+.sass-cache/
 
 \#*\#
 
 archive
 commitversion
-narou.bat
 
 #
 # for gem
