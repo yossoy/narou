@@ -6,6 +6,8 @@
     });
 
     var bookmarklet = function(d,e,u,o,s) {
+      u='#{request.scheme}://#{env["SERVER_NAME"]}:#{env["SERVER_PORT"]}'+
+        '/js/widget.js?mode=%MODE%&_='+Date.now();
       o=d.createElement("div");
       o.innerHTML="WEB UI Server: OFFLINE";
       o.id="narourb-offline";
@@ -21,19 +23,19 @@
         s.top=0
       },1000);
 
-      u='#{request.scheme}://#{env["SERVER_NAME"]}:#{env["SERVER_PORT"]}'+
-        '/js/widget.js?mode=download&t='+Date.now();
       e=d.createElement('script');
       e.charset='utf-8';
       e.src=u;
       d.body.appendChild(e)
     };
 
-    function createBookmarkletStrings(proc) {
-      return ("javascript:(" + proc + ")(document)").replace(/ {2,}|\n/g, "");
+    function createBookmarkletStrings(proc, mode) {
+      var proc_string = proc.toString().replace("%MODE%", mode);
+      return ("javascript:(" + proc_string + ")(document)").replace(/ {2,}|\n/g, "");
     }
 
-    $("#bookmarklet").attr("href", createBookmarkletStrings(bookmarklet));
+    $("#bookmarklet-download").attr("href", createBookmarkletStrings(bookmarklet, "download"));
+    $("#bookmarklet-insert-button").attr("href", createBookmarkletStrings(bookmarklet, "insert_button"));
   });
 
 .navbar.navbar-default.navbar-fixed-top(role="navigation")
@@ -58,16 +60,28 @@
         %span#queue 0
 #help-container.container.theme-showcase(role="main")
   %h2 ブックマークレット
-  %p 小説掲載サイトを表示したまま直接ダウンロード出来るブックマークレットです。<br> |
-     下記のリンクをブックマークに登録して、ダウンロードしたい小説のページで実行して下さい。（WEB UIサーバ起動中に限ります）<br> |
-    ブックマークバーにドラッグ＆ドロップしたり、右クリックからブックマークにいれると簡単です。 |
-  %p
-    %a#bookmarklet(onclick="return false")
+  %h3 小説ページから直接ダウンロード
+  %div
+    %img#ss-bookmarklet1(src="/resources/help/bookmarklet1.png" class="img-thumbnail")
+    %p 小説掲載サイトを表示したまま直接ダウンロード出来るブックマークレットです。
+    %p 下記のリンクをブックマークに登録して、ダウンロードしたい小説のページで実行して下さい。（WEB UIサーバ起動中に限ります）
+    %p ブックマークバーにドラッグ＆ドロップしたり、右クリックからブックマークにいれると簡単です。
+    %p
+      %span.glyphicon.glyphicon-bookmark
       %big
-        %u Narou.rbでダウンロード
+        %a#bookmarklet-download(onclick="return false")
+          %u Narou.rbでダウンロード
 
-  %p
-    %small 基本的に小説ページ内にダウンロード中の表示が出ますが、IEを使っていてかつ小説家になろうの小説をダウンロードしようとした場合のみ、技術的制約から別ウィンドウが開きます。
+  %h3 ページ内の小説へのリンクにダウンロードボタンを付ける
+  %div
+    %img#ss-bookmarklet2(src="/resources/help/bookmarklet2.png" class="img-thumbnail")
+    %p 小説投稿サイト内の、各小説へのリンクの横にダウンロード用のボタンを埋め込みます。
+    %p ランキングページや一覧ページなどで実行するとダウンロードが一発で出来るようになったり、どれがダウンロード済みなのかが一目瞭然になります。
+    %p
+      %span.glyphicon.glyphicon-bookmark
+      %big
+        %a#bookmarklet-insert-button(onclick="return false")
+          %u DLボタン設置(Narou.rb)
 
   %hr
 
@@ -110,11 +124,14 @@
 
   %h4 シングル選択モード
   %div
-    %p デフォルトの選択方法で、小説一覧をクリックしてひとつずつ選択するモードです。
+    %p 小説一覧をクリックしてひとつずつ選択するモードです。小説リストの文字情報を選択してコピー出来るのはこのモードだけです。
 
   %h4 範囲選択モード
   %div
     %img#ss-rect-select(src="/resources/help/rect_select.png" class="img-thumbnail")
-    %p 一度に複数の小説を選択する場合に便利なモードです。始点をクリックしたあと終点をクリックして範囲を確定するか、始点から終点までをドラッグすることで範囲を決めることが出来ます。
+    %p 一度に複数の小説を選択する場合に便利なモードです。始点をクリックしたあと終点をクリックして範囲を確定するか、始点から終点までをドラッグすることで範囲を決めることが出来ます。範囲の始点と終点をクリック（タップ）のみで決定できるため、トラックパッドでの操作がし易いモードとなります。
     %p 範囲が確定された際にメニューが表示されるので、選択や解除等を選択します。反転は現在の選択状態を逆転させます。
 
+  %h4 ハイブリッド選択モード
+  %div
+    %p クリックで選択とドラッグで範囲選択を同時に行える、シングル選択モードと範囲選択モードの特徴を併せ持ったモードです。

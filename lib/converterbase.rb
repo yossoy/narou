@@ -7,6 +7,7 @@ require "stringio"
 require "date"
 require "uri"
 require "nkf"
+require "pathname"
 require_relative "narou"
 require_relative "progressbar"
 require_relative "inspector"
@@ -17,6 +18,8 @@ class ConverterBase
   ENGLISH_SENTENCES_MIN_LENGTH = 8   # この文字数以上アルファベットが続くと半角のまま
 
   attr_reader :use_dakuten_font
+  attr_accessor :output_text_dir, :subtitles
+  attr_accessor :current_index   # 現在処理してる subtitles 内でのインデックス
 
   def before(io, text_type)
     data = io.string
@@ -37,10 +40,17 @@ class ConverterBase
     @inspector = inspector
     @illustration = illustration
     @use_dakuten_font = false
-    initialize_member_values
+    @output_text_dir = nil
+    @subtitles = nil
+    @current_index = 0
+    reset_member_values
   end
 
-  def initialize_member_values
+  #
+  # .convert が実行されるたびに呼ばれるメンバ変数リセット用メソッド
+  # インスタンス作成時に一度だけ初期化したい場合は initialize で初期化する
+  #
+  def reset_member_values
     @request_insert_blank_next_line = false
     @request_skip_output_line = false
     @before_line = ""
@@ -284,7 +294,7 @@ class ConverterBase
     data.gsub!(/([!?！？]+)([^!?！？])/) do
       m1, m2 = $1, $2
       m2 = "　" if m2 == " "
-      if m2 =~ /[^」］\]』】〉》〕＞>≫)）"”’〟　☆★♪［―]/
+      if m2 =~ /[^」］｝\]\}』】〉》〕＞>≫)）"”’〟　☆★♪［―]/
         "#{m1}　#{m2}"
       else
         "#{m1}#{m2}"
@@ -324,6 +334,7 @@ class ConverterBase
     convert_tatechuyoko(data)
     convert_novel_rule(data)
     convert_arrow(data)
+    convert_head_half_spaces(data)
   end
 
   #
@@ -344,8 +355,8 @@ class ConverterBase
     data.gsub!(/[#{SINGLE_MINUTE_FAMILY}]([^"\n]+?)[#{SINGLE_MINUTE_FAMILY}]/, "〝\\1〟")
     # MEMO: シングルミュートを表示出来るフォントはほとんど無いためダブルにする
     data.gsub!(/[#{DOUBLE_MINUTE_FAMILY}]([^"\n]+?)[#{DOUBLE_MINUTE_FAMILY}]/, "〝\\1〟")
-    data.tr!("-=+/*《》'\"%$#&!?<>＜＞()|‐,._;:[]",
-             "－＝＋／＊≪≫’”％＄＃＆！？〈〉〈〉（）｜－，．＿；：［］")
+    data.tr!("-=+/*《》'\"%$#&!?<>＜＞()|‐,._;:\[\]{}",
+             "－＝＋／＊≪≫’〝％＄＃＆！？〈〉〈〉（）｜－，．＿；：［］")
     data.gsub!("\\", "￥")
     data
   end
@@ -404,6 +415,16 @@ class ConverterBase
     # Kindle PW でしか確認してないのでとりあえず device=kindle の場合のみ変換
     if @device && @device.kindle?
       data.tr!("⇒⇐", "→←")
+    end
+  end
+
+  #
+  # 間違えて行頭字下げに半角スペースを使ってるっぽいのを全角スペースにする
+  #
+  def convert_head_half_spaces(data)
+    data.gsub!(/^ +/) do |match|
+      # 半角スペースの数に応じて全角スペースの数も調整してみる
+      "　" * (match.count(" ") / 2.0).ceil
     end
   end
 
@@ -798,7 +819,7 @@ class ConverterBase
   # かぎ括弧内自動連結
   #
   def auto_join_in_brackets(data)
-    if !@setting.enable_auto_join_in_brackets && !@setting.enable_inspect_invalid_openclose_brackets
+    if !@setting.enable_auto_join_in_brackets && !@setting.enable_inspect
       return
     end
     OPENCLOSE_REGEXPS.each_with_index do |openclose, i|
@@ -813,7 +834,7 @@ class ConverterBase
         end
         "［＃かぎ括弧＝#{j}］"
       end
-      if @setting.enable_inspect_invalid_openclose_brackets
+      if @setting.enable_inspect
         # 正しく閉じてないかぎ括弧だけが data に残ってる
         @inspector.inspect_invalid_openclose_brackets(data, BRACKETS[i], stack)
       end
@@ -832,11 +853,12 @@ class ConverterBase
   #
   def auto_join_line(data)
     # 次の行の冒頭が開き記号だったら意図的な改行だと判断して連結しない
-    data.gsub!(/([^、])、\n　([^「『(（【<＜〈《≪…‥―])/, "\\1、\\2")
+    # 行頭の全角スペースが２個以上の場合も連結しない
+    data.gsub!(/([^、])、\n　([^「『(（【<＜〈《≪…‥―　])/, "\\1、\\2")
   end
 
   CHARACTER_OF_RUBY = "一-龠Ａ-Ｚａ-ｚA-Za-z"
-  AUTO_RUBY_CHARACTERS = "([ぁ-んァ-ヶーゝゞ・Ａ-Ｚａ-ｚA-Za-z 　]{,20})"
+  AUTO_RUBY_CHARACTERS = "([ぁ-んァ-ヶーゝゞ・ 　]{,20})"
 
   #
   # 小説家になろうのルビ対策
@@ -1225,7 +1247,13 @@ class ConverterBase
       symbol = false
       case char
       when "｜"
-        ss.scan(/.+?》/)
+        buffer << char
+        if ss.scan(/.+?》/)
+          buffer << "#{ss.matched}"
+        else
+          before_symbol = false
+        end
+        next
       when "［"
         buffer << char
         if ss.scan(/^＃.+?］/)
@@ -1261,12 +1289,16 @@ class ConverterBase
 
   def convert(text, text_type)
     return "" if text == ""
+    output_text_dir = @output_text_dir || @setting.archive_path
     @text_type = text_type
     io = StringIO.new(rstrip_all_lines(text))
     (io = before_convert(io)).rewind
     (io = convert_main(io)).rewind
     (io = after_convert(io)).rewind
-    return insert_separator_for_selection(replace_by_replace_txt(io.read))
+    data = replace_by_replace_txt(io.read)
+    data = insert_separator_for_selection(data)
+    data = double_dash_to_image(data, output_text_dir)
+    return data
   end
 
   #
@@ -1291,8 +1323,9 @@ class ConverterBase
     else
       data = io.read
     end
-    initialize_member_values
+    reset_member_values
     convert_for_all_data(data)
+    progressbar = nil
     if @text_type == "textfile"
       # convert_for_all_data -> replace_narou_tag
       # で改行化を行わないと正確な改行数は分からない
@@ -1304,7 +1337,7 @@ class ConverterBase
       @write_fp.write(data)
     else
       @read_fp.each_with_index do |line, i|
-        progressbar.output(i) if @text_type == "textfile"
+        progressbar.output(i) if progressbar
         @request_skip_output_line = false
         zenkaku_rstrip(line)
         if @request_insert_blank_next_line
@@ -1361,8 +1394,11 @@ class ConverterBase
       data.replace(title_and_author + data)
     end
     data.rstrip!
-    progressbar.clear if @text_type == "textfile"
     @write_fp
+  ensure
+    if @text_type == "textfile" && progressbar
+      progressbar.clear
+    end
   end
 
   #
@@ -1375,5 +1411,49 @@ class ConverterBase
       result.gsub!(src, dst)
     end
     result
+  end
+
+  DASH_FILES = %w(singledash.png doubledash.png)
+
+  def double_dash_to_image(text, output_text_dir)
+    return text unless @setting.enable_double_dash_to_image
+    begin
+      # AozoraEpub3 は相対パスじゃないとエラーになるので相対パスに変換
+      dash_paths = dash_image_relative_paths(Narou.get_preset_dir, output_text_dir)
+    rescue ArgumentError => e
+      if e.message =~ /^different prefix/
+        # Windowsにおいて、スクリプト本体のあるドライブと小説フォルダがあるドライブが
+        # 違う場合、相対パスを計算できなくなる。そのための対処として、.narou ディレクトリ
+        # に画像データをコピーし、同一ドライブ内で相対パスを取れるようにする
+        copy_dash_images_to_local_setting_dir
+        dash_paths = dash_image_relative_paths(Narou.get_local_setting_dir, output_text_dir)
+      else
+        raise
+      end
+    end
+    text.gsub(/―{2,}/) do |match|
+      len = match.length
+      result = "※［＃（#{dash_paths[1]}）］" * (len / 2)
+      if len.odd?
+        result += "※［＃（#{dash_paths[0]}）］"
+      end
+      result
+    end
+  end
+
+  def dash_image_relative_paths(base_dir, output_text_dir)
+    DASH_FILES.map do |name|
+      pathname = Pathname(File.join(base_dir, name))
+      pathname.relative_path_from(Pathname(output_text_dir)).to_s
+    end
+  end
+
+  def copy_dash_images_to_local_setting_dir
+    DASH_FILES.each do |name|
+      path = File.join(Narou.get_local_setting_dir, name)
+      unless File.exist?(path)
+        FileUtils.copy(File.join(Narou.get_preset_dir, name), path)
+      end
+    end
   end
 end

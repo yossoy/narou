@@ -4,6 +4,7 @@
 #
 
 require "optparse"
+require_relative "web/worker"
 
 module Command
   class CommandBase
@@ -55,7 +56,7 @@ module Command
 
     def load_local_settings
       command_prefix = self.class.to_s.scan(/[^:]+$/)[0].downcase
-      local_settings = Inventory.load("local_setting", :local)
+      local_settings = Inventory.load("local_setting")
       local_settings.each do |name, value|
         if name =~ /^#{command_prefix}\.(.+)$/
           @options[$1] = value
@@ -76,6 +77,16 @@ module Command
         end
       end
       array.map! { |arg|
+        if arg =~ /^[0-9]+$/
+          # 優先度はID＞タグのため、数字のみ指定されたら
+          # そのIDが存在した場合はIDとみなす
+          next arg if database[arg.to_i]
+        end
+        if arg =~ /^tag:(.+)$/
+          # tag:タグ名 は直接タグと指定できる形式
+          # (数字タグとIDがかぶった場合にタグを指定出来るようにするもの)
+          arg = $1
+        end
         ids = tag_index[arg]
         ids.empty? ? arg : ids
       }.flatten!
@@ -116,7 +127,7 @@ module Command
     # 設定の強制設定
     #
     def force_change_settings_function(pairs)
-      settings = Inventory.load("local_setting", :local)
+      settings = Inventory.load("local_setting")
       modified = false
       pairs.each do |name, value|
         if settings[name].nil? || settings[name] != value

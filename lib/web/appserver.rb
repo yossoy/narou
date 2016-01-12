@@ -6,12 +6,11 @@
 require "socket"
 require "sinatra/base"
 require "sinatra/json"
-if $debug
-  require "sinatra/reloader"
-  require "pry"
-end
-require "haml"
-require "sass"
+require "sinatra/reloader" if $development
+require "better_errors" if $debug
+require "tilt/erubis"
+require "tilt/haml"
+require "tilt/sass"
 require_relative "../logger"
 require_relative "../commandline"
 require_relative "../inventory"
@@ -89,15 +88,15 @@ module Narou::ServerHelpers
   end
 
   #
-  # 与えられたデータが真偽値だった場合、設定画面用に「する」「しない」に変換する
+  # 与えられたデータが真偽値だった場合、設定画面用に「はい」「いいえ」に変換する
   # 真偽値ではなかった場合、そのまま返す
   #
   def value_to_msg(value)
     case value
     when TrueClass
-      "する"
+      "はい"
     when FalseClass
-      "しない"
+      "いいえ"
     else
       value
     end
@@ -105,8 +104,12 @@ module Narou::ServerHelpers
 end
 
 class Narou::AppServer < Sinatra::Base
-  register Sinatra::Reloader if $debug
+  register Sinatra::Reloader if $development
   helpers Narou::ServerHelpers
+
+  @@request_reboot = false
+  @@already_update_system = false
+  @@gem_update_last_log = ""
 
   configure do
     set :app_file, __FILE__
@@ -118,11 +121,28 @@ class Narou::AppServer < Sinatra::Base
       Command::Version.create_version_string
     end
 
-    set :environment, :production unless $debug
+    set :environment, :production unless $development
+
+    if $debug
+      use BetterErrors::Middleware
+      BetterErrors.application_root = Narou.get_script_dir
+    end
   end
 
   def self.push_server=(server)
     @@push_server = server
+  end
+
+  def self.push_server
+    @@push_server
+  end
+
+  def self.request_reboot
+    @@request_reboot = true
+  end
+
+  def self.request_reboot?
+    @@request_reboot
   end
 
   #
@@ -177,6 +197,14 @@ class Narou::AppServer < Sinatra::Base
   # ===================================================================
 
   before do
+    @bootstrap_theme = case params["theme"]
+                       when nil
+                         Narou.get_theme
+                       when ""   # 環境設定画面で未設定が選択された時
+                         nil
+                       else
+                         params["theme"]
+                       end
     Narou::Worker.push_as_system_worker do
       Inventory.clear
       Database.instance.refresh
@@ -200,7 +228,6 @@ class Narou::AppServer < Sinatra::Base
 
   before "/settings" do
     @title = "環境設定"
-    @view_invisible = params["view_invisible"] == "1"
     @setting_variables = Command::Setting.get_setting_variables
     @error_list = {}
     @global_replace_pattern = @replace_pattern = Narou.global_replace_pattern
@@ -283,12 +310,42 @@ class Narou::AppServer < Sinatra::Base
   get "/about" do
     @narourb_version = settings.version
     @ruby_version = build_ruby_version
-    haml :about, layout: false
+    haml :_about, layout: false
   end
 
   post "/shutdown" do
     self.class.quit!
     "シャットダウンしました。再起動するまで操作は出来ません"
+  end
+
+  post "/reboot" do
+    self.class.request_reboot
+    self.class.quit!
+    haml :_rebooting, layout: false
+  end
+
+  post "/update_system" do
+    Thread.new do
+      buffer = `gem update --no-document narou`
+      @@gem_update_last_log = buffer.strip!
+      if buffer =~ /Nothing to update\z/
+        @@push_server.send_all("server.update.nothing" => buffer)
+      elsif buffer.include?("Gems updated: narou")
+        @@already_update_system = true
+        @@push_server.send_all("server.update.success" => buffer)
+      else
+        @@push_server.send_all("server.update.failure" => buffer)
+      end
+    end
+  end
+
+  post "/gem_update_last_log" do
+    content_type "text/plain"
+    @@gem_update_last_log
+  end
+
+  post "/check_already_update_system" do
+    json({ result: @@already_update_system })
   end
 
   before "/novels/:id/*" do
@@ -299,13 +356,13 @@ class Narou::AppServer < Sinatra::Base
   end
 
   before "/novels/:id/setting" do
-    @title = "小説の変換設定"
     @novel_title = @data["title"]
+    @title = "小説の変換設定 - #{h @novel_title}"
     @setting_variables = []
     @error_list = {}
     @novel_setting = NovelSetting.new(@id, true, true)    # 空っぽの設定を作成
     @novel_setting.settings = @novel_setting.load_setting_ini["global"]
-    @original_settings = NovelSetting::ORIGINAL_SETTINGS
+    @original_settings = NovelSetting.get_original_settings
     @force_settings = NovelSetting.load_force_settings
     @default_settings = NovelSetting.load_default_settings
     @replace_pattern = @novel_setting.load_replace_pattern
@@ -368,10 +425,14 @@ class Narou::AppServer < Sinatra::Base
     ext = device ? device.ebook_file_ext : ".epub"
     path = Narou.get_ebook_file_path(@id, ext)
     if File.exist?(path)
-      send_file(path, filename: File.basename(path))
+      send_file(path, filename: File.basename(path), type: "application/octet-stream")
     else
       not_found
     end
+  end
+
+  not_found do
+    "not found"
   end
 
   # -------------------------------------------------------------------------------
@@ -403,13 +464,17 @@ class Narou::AppServer < Sinatra::Base
             tags.include?("end") ? "完結" : nil,
             tags.include?("404") ? "削除" : nil,
           ].compact.join(", "),
-          download: %!<a href="/novels/#{id}/download" class="btn btn-default btn-xs"><span class="glyphicon glyphicon-book"></span></a>!,
+          download: %!<a href="/novels/#{id}/download" class="btn btn-default btn-xs"><span class="glyphicon glyphicon-download-alt"></span></a>!,
           frozen: Narou.novel_frozen?(id),
           new_arrivals_date: data["new_arrivals_date"].tap { |m| break m.to_i if m },
           general_lastup: data["general_lastup"].tap { |m| break m.to_i if m }
         }
       end
     json json_objects
+  end
+
+  post "/api/cancel" do
+    Narou::Worker.cancel
   end
 
   post "/api/convert" do
@@ -420,10 +485,12 @@ class Narou::AppServer < Sinatra::Base
   end
 
   post "/api/download" do
-    target = params["target"] or pass
+    targets = params["targets"] or pass
+    targets = targets.kind_of?(Array) ? targets : targets.split
+    pass if targets.size == 0
     Narou::Worker.push do
-      CommandLine.run!(["download", target])
-      @@push_server.send_all("table.reload" => true)
+      CommandLine.run!(["download"] + targets)
+      @@push_server.send_all(:"table.reload")
     end
   end
 
@@ -431,33 +498,24 @@ class Narou::AppServer < Sinatra::Base
     ids = select_valid_novel_ids(params["ids"]) or pass
     Narou::Worker.push do
       CommandLine.run!(["download", "--force", ids])
-      @@push_server.send_all("table.reload" => true)
+      @@push_server.send_all(:"table.reload")
     end
   end
 
   post "/api/update" do
-    Narou::Worker.push do
-      CommandLine.run!(["update"])
-      @@push_server.send_all("table.reload" => true)
+    ids = select_valid_novel_ids(params["ids"]) || []
+    opt_arguments = []
+    if params["force"] == "true"
+      opt_arguments << "--force"
     end
-  end
-
-  post "/api/update_select" do
-    ids = select_valid_novel_ids(params["ids"]) or pass
     Narou::Worker.push do
-      CommandLine.run!(["update", ids])
-      @@push_server.send_all("table.reload" => true)
+      CommandLine.run!(["update", ids, opt_arguments])
+      @@push_server.send_all(:"table.reload")
     end
   end
 
   post "/api/send" do
-    Narou::Worker.push do
-      CommandLine.run!(["send"])
-    end
-  end
-
-  post "/api/send_select" do
-    ids = select_valid_novel_ids(params["ids"]) or pass
+    ids = select_valid_novel_ids(params["ids"]) || []
     Narou::Worker.push do
       CommandLine.run!(["send", ids])
     end
@@ -467,7 +525,7 @@ class Narou::AppServer < Sinatra::Base
     ids = select_valid_novel_ids(params["ids"]) or pass
     Narou::Worker.push do
       CommandLine.run!(["freeze", ids])
-      @@push_server.send_all("table.reload" => true)
+      @@push_server.send_all(:"table.reload")
     end
   end
 
@@ -475,7 +533,7 @@ class Narou::AppServer < Sinatra::Base
     ids = select_valid_novel_ids(params["ids"]) or pass
     Narou::Worker.push do
       CommandLine.run!(["freeze", "--on", ids])
-      @@push_server.send_all("table.reload" => true)
+      @@push_server.send_all(:"table.reload")
     end
   end
 
@@ -483,15 +541,19 @@ class Narou::AppServer < Sinatra::Base
     ids = select_valid_novel_ids(params["ids"]) or pass
     Narou::Worker.push do
       CommandLine.run!(["freeze", "--off", ids])
-      @@push_server.send_all("table.reload" => true)
+      @@push_server.send_all(:"table.reload")
     end
   end
 
   post "/api/remove" do
     ids = select_valid_novel_ids(params["ids"]) or pass
+    opt_arguments = []
+    if params["with_file"] == "true"
+      opt_arguments << "--with-file"
+    end
     Narou::Worker.push do
-      CommandLine.run!(["remove", "--yes", ids])
-      @@push_server.send_all("table.reload" => true)
+      CommandLine.run!(["remove", "--yes", ids, opt_arguments])
+      @@push_server.send_all(:"table.reload")
     end
   end
 
@@ -499,7 +561,7 @@ class Narou::AppServer < Sinatra::Base
     ids = select_valid_novel_ids(params["ids"]) or pass
     Narou::Worker.push do
       CommandLine.run!(["remove", "--yes", "--with-file", ids])
-      @@push_server.send_all("table.reload" => true)
+      @@push_server.send_all(:"table.reload")
     end
   end
 
@@ -520,7 +582,15 @@ class Narou::AppServer < Sinatra::Base
     target = params["target"] or return ""
     id = Downloader.get_id_by_target(target) or return ""
     @list = Command::Diff.new.get_diff_list(id)
-    haml :diff_list, layout: false
+    haml :_diff_list, layout: false
+  end
+
+  post "/api/diff_clean" do
+    target = params["target"] or pass
+    id = Downloader.get_id_by_target(target) or pass
+    Narou::Worker.push do
+      CommandLine.run!(%W(diff --clean #{id}))
+    end
   end
 
   post "/api/inspect" do
@@ -550,7 +620,9 @@ class Narou::AppServer < Sinatra::Base
     result = '<div><span class="tag label label-default" data-tag="">タグ検索を解除</span></div>'
     tagname_list = Command::Tag.get_tag_list.keys
     tagname_list.each do |tagname|
-      result << "<div>#{decorate_tags([tagname])}</div>"
+      result << "<div>#{decorate_tags([tagname])} " \
+                "<span class='select-color-button' data-target-tag='#{h tagname}'>" \
+                "<span class='#{Command::Tag.get_color(tagname)}'>a</span></span></div>"
     end
     result
   end
@@ -611,11 +683,84 @@ class Narou::AppServer < Sinatra::Base
     end
   end
 
+  post "/api/setting_burn" do
+    ids = select_valid_novel_ids(params["ids"]) or pass
+    Narou::Worker.push do
+      CommandLine.run!(["setting", "--burn", ids])
+    end
+  end
+
+  post "/api/change_tag_color" do
+    tag = params["tag"] or pass
+    color = params["color"] or pass
+    tag_colors = Inventory.load("tag_colors")
+    tag_colors[tag] = color
+    tag_colors.save
+    @@push_server.send_all(:"table.reload")
+    @@push_server.send_all(:"tag.updateCanvas")
+  end
+
+  get "/api/csv/download" do
+    content_type "application/csv"
+    attachment "novels.csv"
+
+    Command::Csv.new.generate
+  end
+
+  post "/api/csv/import" do
+    files = params["files"] or pass
+    csv = Command::Csv.new
+    files.each do |file|
+      csv.import(file[:tempfile])
+    end
+    ""
+  end
+
+  # ダウンロード登録すると同時にグレーのボタン画像を返す
+  get "/api/download4ie" do
+    Narou::Worker.push do
+      CommandLine.run!(%W(download #{params["target"]}))
+      @@push_server.send_all(:"table.reload")
+    end
+    redirect "/resources/images/dl_button1.gif"
+  end
+
+  get "/api/validate_url_regexp_list" do
+    json Downloader.load_settings.map { |setting|
+      "(#{setting["url"].gsub(/\?<.+?>/, "?:").gsub("\\", "\\\\")})"
+    }
+  end
+
+  get "/api/version/current.json" do
+    json({ version: ::Version })
+  end
+
+  get "/api/version/latest.json" do
+    json({ version: Narou.latest_version })
+  end
+
+  # -------------------------------------------------------------------------------
+  # 一部分に表示するためのHTMLを取得する(パーシャル)
+  # -------------------------------------------------------------------------------
+
+  get "/partial/csv_import" do
+    haml :"partial/csv_import", layout: false
+  end
+
+  get "/partial/download_form" do
+    haml :"partial/download_form", layout: false
+  end
+
+  # -------------------------------------------------------------------------------
+  # ウィジット関係
+  # -------------------------------------------------------------------------------
+
+  BOOKMARKLET_MODE = %w(download insert_button)
 
   get "/js/widget.js" do
-    if %w(download).include?(params["mode"])
+    if BOOKMARKLET_MODE.include?(params["mode"])
       content_type :js
-      erb :"js/widget"
+      erb :"bookmarklet/#{params['mode']}.js"
     else
       error("invaid mode")
     end
@@ -632,9 +777,6 @@ class Narou::AppServer < Sinatra::Base
     from = params["from"]
     if ALLOW_HOSTS.include?(from)
       headers "X-Frame-Options" => "ALLOW-FROM http://#{from}/"
-    else
-      headers "X-Frame-Options" => "DENY"
-      halt
     end
   end
 
@@ -644,7 +786,11 @@ class Narou::AppServer < Sinatra::Base
       CommandLine.run!(["download", target])
       @@push_server.send_all(:"table.reload")
     end
-    haml :widget, :layout => nil
+    haml :"widget/download", layout: nil
+  end
+
+  get "/widget/drag_and_drop" do
+    haml :"widget/drag_and_drop", layout: nil
   end
 end
 

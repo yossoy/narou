@@ -5,6 +5,7 @@
 
 require "open3"
 require "time"
+require "systemu"
 
 #
 # 雑多なお助けメソッド群
@@ -13,6 +14,7 @@ module Helper
   module_function
 
   HOST_OS = RbConfig::CONFIG["host_os"]
+  FILENAME_LENGTH_LIMIT = 50
 
   def os_windows?
     @@os_is_windows ||= HOST_OS =~ /mswin(?!ce)|mingw|bccwin/i
@@ -109,7 +111,8 @@ module Helper
   # ダウンロードしてきたデータを使いやすいように処理
   #
   def pretreatment_source(src, encoding = Encoding::UTF_8)
-    restor_entity(src.force_encoding(encoding)).gsub("\r", "")
+    src.force_encoding(encoding).gsub("\r", "")
+       .encode("UTF-16BE", encoding, :invalid => :replace, :undef => :replace, :replace => "?").encode("UTF-8")
   end
 
   ENTITIES = { quot: '"', amp: "&", nbsp: " ", lt: "<", gt: ">", copy: "(c)", "#39" => "'" }
@@ -117,7 +120,7 @@ module Helper
   # エンティティ復号
   #
   def restor_entity(str)
-    result = str.encode("UTF-16BE", "UTF-8", :invalid => :replace, :undef => :replace, :replace => "?").encode("UTF-8")
+    result = str.dup
     ENTITIES.each do |key, value|
       result.gsub!("&#{key};", value)
     end
@@ -175,8 +178,10 @@ module Helper
       "整数        "
     when :float
       "小数点数    "
-    when :string, :select, :multiple
+    when :string, :select
       "文字列      "
+    when :multiple
+      "文字列(複数)"
     when :directory
       "フォルダパス"
     when :file
@@ -285,7 +290,44 @@ module Helper
   end
 
   #
+  # 伏せ字にする
+  #
+  # 数字やスペース、句読点、感嘆符はそのままにする
+  #
+  def to_unprintable_words(string, mask = "●")
+    result = ""
+    string.each_char do |char|
+      result += case char
+                when /[0-9０-９ 　、。!?！？]/
+                  char
+                else
+                  mask
+                end
+    end
+    result
+  end
+
+  #
+  # 長過ぎるファイルパスを詰める
+  # ファイル名部分のみを詰める。拡張子は維持する
+  #
+  def truncate_path(path, limit = FILENAME_LENGTH_LIMIT)
+    dirname = File.dirname(path)
+    extname = File.extname(path)
+    basename = File.basename(path, extname)
+    if basename.length > limit
+      basename = basename[0...limit]
+      dirname = nil if dirname == "."
+      [dirname, "#{basename}#{extname}"].compact.join("/")
+    else
+      path
+    end
+  end
+
+  #
   # 外部コマンド実行中の待機ループの処理を書けるクラス
+  #
+  # 返り値：[標準出力のキャプチャ, 標準エラーのキャプチャ, Process::Status]
   #
   # response = Helper::AsyncCommand.exec("処理に時間がかかる外部コマンド") do
   #   print "*"
@@ -296,30 +338,38 @@ module Helper
   #
   class AsyncCommand
     def self.exec(command, sleep_time = 0.5, &block)
-      Thread.new {
-        loop do
-          block.call if block
-          sleep(sleep_time)
-        end
-      }.tap { |th|
-        begin
-          if Helper.engine_jruby?
-            # MEMO:
-            #   Open3.capture3 - 全く動かない
-            #   `` バッククウォート - 出力が文字化けする
-            res = Open3.popen3(command) { |i, o, e|
-              i.close
-              `cd`   # create dummy Process::Status object to $?
-              [o.read, e.read, $?]
-            }
-          else
-            res = Open3.capture3(command)
+      looper = nil
+      _pid = nil
+      status, stdout, stderr = systemu(command) do |pid|
+        _pid = pid
+        looper = Thread.new(pid) do |pid|
+          loop do
+            block.call if block
+            sleep(sleep_time)
+            if Narou::Worker.canceled?
+              Process.kill("KILL", pid)
+              Process.detach(pid)
+              break
+            end
           end
-        ensure
-          th.kill
         end
-        return res
-      }
+        looper.join
+        looper = nil
+      end
+      stdout.force_encoding(Encoding::UTF_8)
+      stderr.force_encoding(Encoding::UTF_8)
+      return [stdout, stderr, status]
+    rescue Interrupt
+      if _pid
+        begin
+          Process.kill("KILL", _pid)
+          Process.detach(_pid)    # 死亡確認しないとゾンビ化する
+        rescue
+        end
+      end
+      raise
+    ensure
+      looper.kill if looper
     end
   end
 

@@ -10,6 +10,10 @@ require_relative "../inventory"
 module Command
   class Tag < CommandBase
     COLORS = %w(green yellow blue magenta cyan red white)
+    # 禁止文字
+    BAN_CHAR = /[:;"'><$@&^\\\|%'\/`]/
+    # 禁止ワード
+    BAN_WORD = %w(hotentry)
 
     def self.oneline_help
       "各小説にタグを設定及び閲覧が出来ます"
@@ -43,12 +47,24 @@ module Command
 
     # 他のコマンドでタグを使う
     narou freeze --on end       # end(完結タグ)が付いた小説を一括で凍結
+    narou update tag:404        # 404タグを明示する
+                                # ID:404 が存在しなければ明示する必要はない
 
   Options:
       EOS
       @opt.on("-a", "--add TAGS", String, "タグを追加する") { |tags|
         @options["mode"] = :add
-        @options["tags"] = tags.split
+        @options["tags"] = tags.split.tap { |array|
+          array.each do |tag|
+            if tag =~ BAN_CHAR
+              error "#{tag} に使用禁止記号が含まれています"
+              exit Narou::EXIT_ERROR_CODE
+            elsif BAN_WORD.include?(tag)
+              error "#{tag} は使用禁止ワードです"
+              exit Narou::EXIT_ERROR_CODE
+            end
+          end
+        }
       }
       @opt.on("-d", "--delete TAGS", String, "タグを外す") { |tags|
         @options["mode"] = :delete
@@ -98,15 +114,25 @@ module Command
     end
 
     def execute(argv)
+      # タグの色がすでに決まっていた場合は変更しない隠しオプション
+      no_overwrite_color = !!argv.delete("--no-overwrite-color")
       super
+      @options["no-overwrite-color"] = no_overwrite_color   # super で @options.clear されるのでここで代入
+      color_changed = change_colors
       @options["mode"] ||= :list
       if argv.empty?
         if @options["mode"] == :list
           display_taglist
           return
         end
-        error "対象の小説を指定して下さい"
-        exit Narou::EXIT_ERROR_CODE
+        if color_changed
+          puts "タグの色を変更しました"
+          display_taglist
+          return
+        else
+          error "対象の小説を指定して下さい"
+          exit Narou::EXIT_ERROR_CODE
+        end
       else
         if @options["mode"] == :list
           search_novel_by_tag(argv)
@@ -128,6 +154,17 @@ module Command
 
     def search_novel_by_tag(argv)
       List.execute!(["--tag", argv.join(" ")])
+    end
+
+    def change_colors
+      changed = false
+      if @options["color"] && @options["tags"]
+        @options["tags"].each do |tag|
+          set_color(tag, @options["color"])
+        end
+        changed = true
+      end
+      changed
     end
 
     def edit_tags(argv)
@@ -152,11 +189,6 @@ module Command
           tags.clear
           puts "#{title} のタグをすべて外しました"
         end
-        if @options["color"] && @options["tags"]
-          @options["tags"].each do |tag|
-            set_color(tag, @options["color"])
-          end
-        end
         if tags.size > 0
           print "現在のタグは "
           print tags.map { |tagname|
@@ -171,7 +203,7 @@ module Command
     end
 
     def self.get_color(tagname)
-      tag_colors = Inventory.load("tag_colors", :local)
+      tag_colors = Inventory.load("tag_colors")
       color = tag_colors[tagname]
       return color if color
       last_color = tag_colors.values.last || COLORS.last
@@ -183,7 +215,10 @@ module Command
     end
 
     def set_color(tagname, color)
-      tag_colors = Inventory.load("tag_colors", :local)
+      tag_colors = Inventory.load("tag_colors")
+      if @options["no-overwrite-color"]
+        return if tag_colors.include?(tagname)
+      end
       tag_colors[tagname] = color
       tag_colors.save
     end

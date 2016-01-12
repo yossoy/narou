@@ -19,12 +19,12 @@
             %li#action-view-setting
               %a(href="#") 表示する項目を設定
             %li.divider
-            %li#action-view-without-frozen.active
+            %li#action-view-nonfrozen
               %a(href="#")
                 %span
                   %span.active-ok.glyphicon.glyphicon-ok
                   凍結中以外を表示
-            %li#action-view-frozen.active
+            %li#action-view-frozen
               %a(href="#")
                 %span
                   %span.active-ok.glyphicon.glyphicon-ok
@@ -63,7 +63,13 @@
                   %span.active-ok.glyphicon.glyphicon-ok
                   範囲選択モード
                 %span.shortcut R
-        %li
+            %li#action-select-mode-hybrid
+              %a(href="#")
+                %span
+                  %span.active-ok.glyphicon.glyphicon-ok
+                  ハイブリッド選択モード
+                %span.shortcut H
+        %li.dropdown
           %a.dropdown-toggle(data-toggle="dropdown" href="#")
             タグ
             %span.caret
@@ -75,6 +81,24 @@
               %a(href="#")
                 %span
                   選択した小説のタグを編集
+        %li.dropdown
+          %a.dropdown-toggle(data-toggle="dropdown" href="#")
+            ツール
+            %span.caret
+          %ul.dropdown-menu(role="menu")
+            %li#action-tool-open-dnd-window
+              %a(href="#")
+                %span
+                  D&amp;Dウィンドウを開く
+            %li.divider
+            %li#action-tool-csv-download
+              %a(href="#")
+                %span
+                  CSV形式でリストをダウンロード
+            %li#action-tool-csv-import
+              %a(href="#")
+                %span
+                  CSVファイルからインポート
       %ul.nav.navbar-nav.navbar-right
         %li.dropdown
           %a.dropdown-toggle(data-toggle="dropdown" href="#")
@@ -100,6 +124,11 @@
                   %span.glyphicon.glyphicon-info-sign
                   Narou.rb について
             %li.divider
+            %li#action-option-server-reboot
+              %a(href="#")
+                %span
+                  %span.glyphicon.glyphicon-refresh
+                  サーバを再起動
             %li#action-option-server-shutdown
               %a(href="#")
                 %span
@@ -131,6 +160,7 @@
   #console-container
     #console.console
     #console-buttons.console-buttons
+      %span.queue-cancel.glyphicon.glyphicon-remove-circle(data-toggle="tooltip" title="処理を中断")
       %span.console-trash.glyphicon.glyphicon-trash(data-toggle="tooltip" title="ログと履歴を削除")
       %span.console-expand
         %span.glyphicon.glyphicon-resize-full(data-toggle="tooltip" title="拡大")
@@ -156,9 +186,18 @@
         %li
           %a#button-update-view(href="#") 表示されている小説を更新
         %li
+          %a#button-update-force(href="#") 凍結済みでも更新
+        %li
           %a#button-update-general-lastup(href="#") 最新話掲載日を更新
     .btn-group
       %button#button-send.btn.btn-warning(type="button") Send
+      - if Inventory.load("local_setting")["hotentry"]
+        %button.btn.btn-warning.dropdown-toggle(type="button" data-toggle="dropdown")
+          %span.caret
+          %span.sr-only Toggle Dropdown
+        %ul.dropdown-menu(role="menu")
+          %li
+            %a#button-send-hotentry(href="#") hotentry を送信
     .btn-group
       %button.btn.btn-info.dropdown-toggle.enable-selected(type="button" data-toggle="dropdown")
         Freeze
@@ -170,16 +209,10 @@
         %li
           %a#button-freeze-off(href="#") 選択した小説の凍結を解除
     .btn-group
-      %button.btn.btn-danger.dropdown-toggle.enable-selected(type="button" data-toggle="dropdown")
-        Remove
-        %span.caret
-        %span.sr-only Toggle Dropdown
-      %ul.dropdown-menu(role="menu")
-        %li
-          %a#button-remove(href="#") 選択した小説を削除
-        %li
-          %a#button-remove-with-file(href="#") 選択した小説をファイルも含めて削除
-    %button#button-convert.btn.btn-default.enable-selected(type="button" data-toggle="tooltip" |
+      %button#button-remove.btn.btn-danger.enable-selected(type="button" data-toggle="tooltip" |
+                            title="選択した小説を削除") Remove |
+    .btn-group
+      %button#button-convert.btn.btn-default.enable-selected(type="button" data-toggle="tooltip" |
                             title="選択した小説を変換") Convert |
     .btn-group
       %button.btn.btn-default.dropdown-toggle.enable-selected(type="button" data-toggle="dropdown")
@@ -188,13 +221,15 @@
         %span.sr-only Toggle Dropdown
       %ul.dropdown-menu(role="menu")
         %li
-          %a#button-diff(href="#") 選択した小説の最新の差分を表示(diff)
+          %a#button-diff(href="#") 選択した小説の最新の差分を表示
         %li
-          %a#button-inspect(href="#") 選択した小説の調査状況ログを表示(inspect)
+          %a#button-inspect(href="#") 選択した小説の調査状況ログを表示
         %li
-          %a#button-folder(href="#") 選択した小説の保存フォルダを開く(folder)
+          %a#button-folder(href="#") 選択した小説の保存フォルダを開く
         %li
-          %a#button-backup(href="#") 選択した小説のバックアップを作成(backup)
+          %a#button-backup(href="#") 選択した小説のバックアップを作成
+        %li
+          %a#button-setting-burn(href="#") 選択した小説の設定の未設定項目に共通設定を焼付ける
 
   %input#tag-search(type="text")
 
@@ -230,8 +265,6 @@
     %a(href="#") 送信
   %li#context-menu-remove
     %a(href="#") 削除
-  %li#context-menu-remove-with-file
-    %a(href="#") 完全に削除
   %li#context-menu-convert
     %a(href="#") 変換
   %li#context-menu-inspect
@@ -254,4 +287,34 @@
         #each-console.console
       .modal-footer
         %button.btn.btn-primary(type="button" data-dismiss="modal") 閉じる
+
+%ul#select-color-menu.dropdown-menu(role="menu")
+  %li
+    %a#select-color-menu-green(href="#")
+      %big
+        %span.label.label-green.label-fixed-width Green
+  %li
+    %a#select-color-menu-yellow(href="#")
+      %big
+        %span.label.label-yellow.label-fixed-width Yellow
+  %li
+    %a#select-color-menu-blue(href="#")
+      %big
+        %span.label.label-blue.label-fixed-width Blue
+  %li
+    %a#select-color-menu-magenta(href="#")
+      %big
+        %span.label.label-magenta.label-fixed-width Magenta
+  %li
+    %a#select-color-menu-cyan(href="#")
+      %big
+        %span.label.label-cyan.label-fixed-width Cyan
+  %li
+    %a#select-color-menu-red(href="#")
+      %big
+        %span.label.label-red.label-fixed-width Red
+  %li
+    %a#select-color-menu-white(href="#")
+      %big
+        %span.label.label-white.label-fixed-width White
 

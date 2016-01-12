@@ -65,6 +65,7 @@ module Command
 
     def interactive_mode
       targets = []
+      return targets if Narou.web?
       puts "【対話モード】"
       puts "ダウンロードしたい小説のNコードもしくはURLを入力して下さい。(1行に1つ)"
       puts "連続して複数の小説を入力していきます。"
@@ -123,12 +124,26 @@ module Command
           end
           next
         end
-        if Downloader.start(download_target, @options["force"], true).status != :ok
+        begin
+          downloader = Downloader.new(download_target, force: @options["force"], from_download: true)
+        rescue Downloader::InvalidTarget => e
+          error e.message
+          mistook_count += 1
+          next
+        end
+        if downloader.start_download.status != :ok
           mistook_count += 1
           next
         end
         unless @options["no-convert"]
-          Convert.execute!([download_target])
+          convert_status = Convert.execute!([download_target])
+          if convert_status > 0
+            # 変換に失敗したか、中断された
+            data = Downloader.get_data_by_target(download_target)   # 新規はDL後に取得しないとデータが存在しない
+            data["_convert_failure"] = true
+            # 中断された場合には残りのダウンロードも中止する
+            raise Interrupt if convert_status == Narou::EXIT_INTERRUPT
+          end
         end
         if @options["freeze"]
           Freeze.execute!([download_target])
@@ -138,6 +153,11 @@ module Command
         end
       end
       exit mistook_count if mistook_count > 0
+    rescue Interrupt
+      puts "ダウンロードを中断しました"
+      exit Narou::EXIT_INTERRUPT
+    ensure
+      Database.instance.save_database
     end
 
     def self.oneline_help

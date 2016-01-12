@@ -67,6 +67,18 @@ body {
   top: 100px;
 }
 
+button[disabled] {
+  cursor: default !important;
+}
+
+/*
+ * プログレスバー
+ */
+.progress-bar {
+  // アニメーションを切る
+  @include css3(transition, none !important);
+}
+
 /*
  * テーブル関連
  */
@@ -204,7 +216,7 @@ table#novel-list {
     content: " 更新";
   }
 
-  /* 最新話更新日 +/
+  /* 最新話更新日 */
   .general-lastup {
   }
   /* 60分以内 */
@@ -315,13 +327,11 @@ table.dataTable {
  */
 .navbar {
   $navbar-background-color: rgba(248,248,248,0.93);
-  background-color: $navbar-background-color;
 
   @media (max-width:767px) {
     .navbar-collapse {
       position: absolute;
       right: -270px;
-      background-color: $navbar-background-color;
       width: 270px;
       border-left: 1px solid #aaa !important;
       border-bottom: 1px solid #aaa !important;
@@ -334,9 +344,6 @@ table.dataTable {
   .active-ok {
     display: none;
   }
-  li.dropdown.open > .dropdown-toggle {
-    background-color: darken($navbar-background-color, 15%) !important;
-  }
   ul.dropdown-menu {
     li.with-icon a {
       padding-left: 8px !important;
@@ -344,16 +351,11 @@ table.dataTable {
     li.active {
       a {
         padding-left: 4px !important;
-        background-color: inherit !important;
-        color: inherit !important;
       }
       a:hover {
-        background-color: #f5f5f5 !important;
-        color: inherit !important;
       }
       @media (max-width:767px) {
         a:hover {
-          background-color: inherit !important;
         }
       }
       span.active-ok {
@@ -376,7 +378,7 @@ table.dataTable {
     width: 200px;
   }
   @media (min-width:768px) {
-    width: 150px;
+    width: 100px;
   }
   @media (min-width:992px){
     width: 250px;
@@ -412,31 +414,51 @@ input::-ms-clear {
 /*
  * タグ
  */
+.select-color-button {
+  float: right;
+}
+.select-color-button span {
+  display: inline-block;
+  width: 1.4em;
+  height: 1.4em;
+  border-radius: 0.7em;
+  text-align: center;
+  cursor: pointer;
+  color: white;
+  font-weight: bold;
+}
+
 .label {
   cursor: pointer;
 }
-.label-green {
+.label-green, .select-color-button .green {
   background-color: #5cb85c;
 }
-.label-yellow {
+.label-yellow, .select-color-button .yellow {
   background-color: #f7d71e;
   color: #666;
 }
-.label-blue {
+.label-blue, .select-color-button .blue {
   background-color: #428bca;
 }
-.label-magenta {
+.label-magenta, .select-color-button .magenta {
   background-color: #d37bca;
 }
-.label-cyan {
+.label-cyan, .select-color-button .cyan {
   background-color: #5bc0de;
 }
-.label-red {
+.label-red, .select-color-button .red {
   background-color: #d9534f;
 }
-.label-white {
-  background-color: #e3e3e3;
+.label-white, .select-color-button .white {
+  border: 1px solid #ddd;
+  background-color: white;
   color: #666;
+}
+
+.label-fixed-width {
+  display: inline-block;
+  width: 100%;
 }
 
 .dataTable {
@@ -500,9 +522,40 @@ input::-ms-clear {
  * 選択メニュー
  */
 #rect-select-menu {
-  position: absolute;
-  display: none;
   z-index: 101;
+}
+
+/*
+ * 色選択メニュー
+ */
+#select-color-menu {
+  position: fixed;
+  z-index: 9999;
+  border-color: #bbb;
+  background-color: white;
+  min-width: 130px;
+}
+#select-color-menu:before {
+  content: "";
+  position: absolute;
+  display: block;
+  top: 20px;
+  left: -18px;
+  border-style: solid;
+  border-width: 9px;
+  border-color: transparent white transparent transparent;
+  z-index: 10001;
+}
+#select-color-menu:after {
+  content: "";
+  position: absolute;
+  display: block;
+  top: 20px;
+  left: -19px;
+  border-style: solid;
+  border-width: 9px;
+  border-color: transparent #bbb transparent transparent;
+  z-index: 10000;
 }
 
 /*
@@ -553,6 +606,7 @@ $console-color: white;
   margin-bottom: 20px !important;
 }
 .console {
+  text-align: left;
   position: relative;
   overflow: hidden;
   padding: 5px 15px 5px 15px;
@@ -658,13 +712,15 @@ $console-color: white;
   }
 }
 
+.container-settings {
+  @media (min-width: 768px) {
+    width: 750px;
+  }
+}
+
 .panel-settings {
   h4 {
     word-break: break-all;
-  }
-
-  @media (min-width: 768px) {
-    width: 750px;
   }
 
   input, .input-style {
@@ -735,8 +791,6 @@ $console-color: white;
  * 個別メニュー
  */
 #context-menu {
-  position: absolute;
-  display: none;
   z-index: 102;
 }
 
@@ -747,13 +801,6 @@ $console-color: white;
   position: relative;
   margin-right: 0;
   cursor: default;
-
-  &.active {
-    color: #4bb0ce !important;
-    #queue {
-      background-color: #4bb0ce !important;
-    }
-  }
 }
 #queue {
   position: relative;
@@ -800,6 +847,16 @@ $console-color: white;
       width: 100%;
     }
   }
+  #ss-bookmarklet1, #ss-bookmarklet2 {
+    @media (min-width: 601px) {
+      float: right;
+      width: 300px;
+      margin-left: 15px;
+    }
+    @media (max-width: 600px) {
+      width: 100%;
+    }
+  }
 
   h4 {
     margin-top: 25px;
@@ -816,8 +873,53 @@ $console-color: white;
   div > p{
     text-indent: 1em;
   }
+
+  h2 {
+    margin-bottom: 25px;
+  }
+  h3 {
+    position: relative;
+    font-size: 1.143em;
+    font-weight: bold;
+    margin: 0 0 1.0em;
+    padding: 0.5em 0.5em 0.5em 1.7em;
+    border-bottom: 3px solid #d94A4C;
+    width: 100%;
+  }
+  h3:before {
+    content: "";
+    position: absolute;
+    background: #d48789;
+    top: 0;
+    left: 0.4em;
+    height: 12px;
+    width: 12px;
+    transform: rotate(45deg);
+    -moz-transform: rotate(45deg);
+    -webkit-transform: rotate(45deg);
+    -o-transform: rotate(45deg);
+    -ms-transform: rotate(45deg);
+  }
+  h3:after {
+    content: "";
+    position: absolute;
+    background:#d26466;
+    top: 1.0em;
+    left: 0;
+    height: 8px;
+    width: 8px;
+    transform: rotate(15deg);
+    -moz-transform: rotate(15deg);
+    -webkit-transform: rotate(15deg);
+    -o-transform: rotate(15deg);
+    -ms-transform: rotate(15deg);
+  }
+  h3:nth-of-type(2) {
+    margin-top: 30px;
+  }
+
   p {
-    margin-bottom: 4px;
+    margin-bottom: 2px;
   }
 }
 
@@ -864,5 +966,137 @@ $console-color: white;
   &:hover {
     cursor: pointer;
     color: #777;
+  }
+}
+
+/* D&D関係 */
+#link-drop-here {
+  position: fixed;
+  top: 0;
+  display: none;
+  width: 100%;
+  height: 100%;
+  text-align: center;
+  vertical-align: middle;
+  color: white;
+  font-size: 100px;
+  background-color: rgba(0, 0, 0, 0.7);
+  z-index: 2000;
+}
+#link-drop-here .inner {
+  position: absolute;
+  display: table;
+  width: 95%;
+  height: 95%;
+  top: 2.5%;
+  left: 2.5%;
+  border: 6px dashed white;
+}
+#link-drop-here .inner .glyphicon {
+  display: table-cell;
+  vertical-align: middle;
+}
+.drop-cover {
+  position: absolute;
+  top: 0;
+  width: 100%;
+  height: 100%;
+  background-color: transparent;
+}
+
+/* CSVインポート関係 */
+#csv-drop-here {
+  position: relative;
+  width: 100%;
+  height: 150px;
+  border: 4px dashed lightgray;
+  color: lightgray;
+  transition: border-color 0.4s ease, background-color 0.4s ease, color 0.4s ease;
+
+  &.dragover {
+    border: 4px dashed #ada;
+    background-color: #efe;
+    color: #5cb85c;
+  }
+
+  .inner {
+    position: absolute;
+    display: table;
+    width: 100%;
+    height: 100%;
+    text-align: center;
+    font-size: 1.5em;
+    font-weight: bold;
+
+    & > div {
+      display: table-cell;
+      vertical-align: middle;
+    }
+
+    .else {
+      color: lightgray;
+      font-size: 0.6em;
+    }
+  }
+}
+
+/* くるくるまわるアイコン */
+.rotate-progress {
+  .icon {
+    display: inline-block;
+    position: absolute;
+    width: 18px;
+    height: 18px;
+    border-radius: 50%;
+    border: 4px solid #17cddd;
+    border-right-color: transparent;
+    -webkit-animation: spin 1s linear infinite;
+    -moz-animation: spin 1s linear infinite;
+    animation: spin 1s linear infinite;
+  }
+
+  .text {
+    padding-left: 23px;
+  }
+}
+@-webkit-keyframes spin {
+  0% { -webkit-transform: rotate(0deg); opacity: 0.4; }
+  50% { -webkit-transform: rotate(180deg); opacity: 1; }
+  100% { -webkit-transform: rotate(360deg); opacity: 0.4; }
+}
+@-moz-keyframes spin {
+  0% { -moz-transform: rotate(0deg); opacity: 0.4; }
+  50% { -moz-transform: rotate(180deg); opacity: 1; }
+  100% { -moz-transform: rotate(360deg); opacity: 0.4; }
+}
+@keyframes spin {
+  0% { transform: rotate(0deg); opacity: 0.4; }
+  50% { transform: rotate(180deg); opacity: 1; }
+  100% { transform: rotate(360deg); opacity: 0.4; }
+}
+
+.link-to-changelog-in-about {
+  position: absolute;
+  top: 5px;
+  right: 15px;
+}
+
+.log-box {
+  position: relative;
+  text-align: left;
+  width: 100%;
+  width: 100%;
+  max-width: 100%;
+  min-width: 100%;
+  height: 100px;
+  overflow-x: hidden;
+  overflow-y: scroll;
+  border-radius: 4px;
+  border: 1px solid lightgray;
+  font-size: 85%;
+  padding: 5px;
+
+  &.large {
+    height: 270px;
   }
 }

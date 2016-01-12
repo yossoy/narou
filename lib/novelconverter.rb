@@ -15,8 +15,11 @@ require_relative "progressbar"
 require_relative "helper"
 require_relative "inventory"
 require_relative "html"
+require_relative "eventable"
 
 class NovelConverter
+  include Narou::Eventable
+
   NOVEL_TEXT_TEMPLATE_NAME = "novel.txt"
   NOVEL_TEXT_TEMPLATE_NAME_FOR_IBUNKO = "ibunko_novel.txt"
 
@@ -178,6 +181,10 @@ class NovelConverter
       return :error
     end
 
+    error_list = stdout_capture.scan(/^(?:\[ERROR\]|エラーが発生しました :).+$/)
+    warn_list = stdout_capture.scan(/^\[WARN\].+$/)
+    info_list = stdout_capture.scan(/^\[INFO\].+$/)
+
     if verbose
       puts
       puts "==== AozoraEpub3 stdout capture " + "=" * 47
@@ -185,12 +192,11 @@ class NovelConverter
       puts "=" * 79
     end
 
-    error_list = stdout_capture.scan(/^(?:\[ERROR\]|エラーが発生しました :).+$/)
-    warn_list = stdout_capture.scan(/^\[WARN\].+$/)
-    info_list = stdout_capture.scan(/^\[INFO\].+$/)
-    if !error_list.empty? || !warn_list.empty? || !info_list.empty?
-      puts
-      puts error_list, warn_list, info_list
+    if !error_list.empty? || !warn_list.empty?
+      unless verbose
+        puts
+        puts error_list, warn_list
+      end
       unless error_list.empty?
         # AozoraEpub3 のエラーにはEPUBが出力されないエラーとEPUBが出力されるエラーの2種類ある。
         # EPUBが出力される場合は「変換完了」という文字があるのでそれを検出する
@@ -208,7 +214,7 @@ class NovelConverter
   # EPUBファイルをkindlegenでMOBIへ
   # AozoraEpub3.jar と同じ場所に kindlegen が無ければ何もしない
   #
-  # 返り値：正常終了 :success、エラー終了 :error、中断終了 :abort、kindlegenがなかった nil
+  # 返り値：正常終了 :success、エラー終了 :error、中断終了 :abort
   #
   def self.epub_to_mobi(epub_path, verbose = false)
     kindlegen_path = File.join(File.dirname(Narou.get_aozoraepub3_path), "kindlegen")
@@ -256,7 +262,76 @@ class NovelConverter
     :success
   end
 
-  def initialize(setting, output_filename = nil, display_inspector = false)
+  #
+  # 変換された整形済みテキストファイルをデバイスに対応した書籍データに変換する
+  #
+  def self.convert_txt_to_ebook_file(txt_path, options)
+    options = {
+      use_dakuten_font: false,
+      dst_dir: nil,
+      device: nil,
+      verbose: false,
+      no_epub: false,
+      no_mobi: false,
+      no_strip: false,
+      no_cleanup_txt: false,
+    }.merge(options)
+
+    device = options[:device]
+    clean_up_file_list = []
+
+    return false if options[:no_epub]
+    clean_up_file_list << txt_path unless options[:no_cleanup_txt]
+    # epub
+    status = NovelConverter.txt_to_epub(txt_path, options[:use_dakuten_font],
+                                        options[:dst_dir], device, options[:verbose])
+    return nil if status != :success
+    if device && device.kobo?
+      epub_ext = device.ebook_file_ext
+    else
+      epub_ext = ".epub"
+    end
+    epub_path = txt_path.sub(/.txt$/, epub_ext)
+
+    if !device || !device.kindle? || options[:no_mobi]
+      puts File.basename(epub_path) + " を出力しました"
+      puts "<bold><green>EPUBファイルを出力しました</green></bold>".termcolor
+      return epub_path
+    end
+
+    clean_up_file_list << epub_path
+    # mobi
+    status = NovelConverter.epub_to_mobi(epub_path, options[:verbose])
+    return nil if status != :success
+    mobi_path = epub_path.sub(/\.epub$/, device.ebook_file_ext)
+
+    # strip
+    unless options[:no_strip]
+      puts "kindlestrip実行中"
+      begin
+        SectionStripper.strip(mobi_path, nil, false)
+      rescue StripException => e
+        error "#{e.message}"
+      end
+    end
+    puts File.basename(mobi_path).encode(Encoding::UTF_8) + " を出力しました"
+    puts "<bold><green>MOBIファイルを出力しました</green></bold>".termcolor
+
+    return mobi_path
+  ensure
+    if Narou.economy?("cleanup_temp")
+      # 作業用ファイルを削除
+      clean_up_temp_files(clean_up_file_list)
+    end
+  end
+
+  def self.clean_up_temp_files(path_list)
+    path_list.each do |path|
+      FileUtils.rm_f(path)
+    end
+  end
+
+  def initialize(setting, output_filename = nil, display_inspector = false, output_text_dir = nil)
     @setting = setting
     @novel_id = setting.id
     @novel_author = setting.author
@@ -266,41 +341,145 @@ class NovelConverter
     @illustration = Illustration.new(@setting, @inspector)
     @display_inspector = display_inspector
     @use_dakuten_font = false
+    @converter = create_converter
+    @converter.output_text_dir = output_text_dir
+    @data = @novel_id ? Database.instance.get_data("id", @novel_id) : {}
   end
 
-  def load_novel_section(subtitle_info)
+  #
+  # 変換処理メインループ
+  #
+  def convert_main(text = nil)
+    display_header
+    initialize_event
+
+    if text
+      converted_text = convert_main_for_text(text)
+    else
+      converted_text = convert_main_for_novel
+      update_latest_convert_novel
+    end
+
+    inspect_novel(converted_text)
+
+    output_path = create_output_path(text, converted_text)
+    File.write(output_path, converted_text)
+
+    display_footer
+
+    output_path
+  end
+
+  def initialize_event
+    progressbar = nil
+
+    one(:"convert_main.init") do |subtitles|
+      progressbar = ProgressBar.new(subtitles.size)
+    end
+    on(:"convert_main.loop") do |i|
+      progressbar.output(i) if progressbar
+    end
+    one(:"convert_main.finish") do
+      progressbar.clear if progressbar
+    end
+  end
+
+  def display_header
+    print "ID:#{@novel_id}　" if @novel_id
+    puts "#{@novel_title} の変換を開始"
+  end
+
+  def display_footer
+    puts "縦書用の変換が終了しました"
+  end
+
+  def load_novel_section(subtitle_info, section_save_dir)
     file_subtitle = subtitle_info["file_subtitle"] || subtitle_info["subtitle"]   # 互換性維持のため
-    path = File.join(@section_save_dir, "#{subtitle_info["index"]} #{file_subtitle}.yaml")
+    path = File.join(section_save_dir, "#{subtitle_info["index"]} #{file_subtitle}.yaml")
     YAML.load_file(path)
+  rescue Errno::ENOENT => e
+    error "#{path} を見つけることが出来ませんでした。narou update #{@novel_id} を実行することで、" \
+          "削除されてしまったファイルを再ダウンロードすることが出来ます"
+    exit Narou::EXIT_ERROR_CODE
   end
 
-  def create_novel_text_by_template(sections)
-    toc = @toc
-    cover_chuki = @cover_chuki
+  # is_hotentry を有効にすると、テンプレートで作成するテキストファイルに
+  # あらすじ、作品タイトル、本の読み終わり表示が付与されなくなる
+  def create_novel_text_by_template(sections, toc, is_hotentry = false)
+    cover_chuki = create_cover_chuki
     device = Narou.get_device
     setting = @setting
-    processed_title = toc["title"]
-    data = Database.instance.get_data("id", @novel_id)
-    # タイトルに新着更新日を付加する
+    processed_title = decorate_title(toc["title"])
+    tempalte_name = (device && device.ibunko? ? NOVEL_TEXT_TEMPLATE_NAME_FOR_IBUNKO : NOVEL_TEXT_TEMPLATE_NAME)
+    Template.get(tempalte_name, binding, 1.1)
+  end
+
+  #
+  # 2045年くらいまでの残り時間を10分単位の36進数で取得する
+  # hyff のような文字列が取得可能
+  #
+  def calc_reverse_short_time(time)
+    ((2396736000 - time.to_i) / (10 * 60)).to_s(36).rjust(4, "0")
+  end
+
+  #
+  # タイトルに日付を付与する。
+  # 日付の種類は title_date_target で指定する
+  #
+  # strftime の書式の他に拡張書式として $s, $t をサポートする
+  # $s 2045年くらいまでの残り時間を10分単位の36進数（4桁）
+  # $t タイトル自身。書式の中で自由な位置にタイトルを埋め込める
+  # $ns 小説が掲載されているサイト名
+  # $nt 小説種別（短編 or 連載）
+  #
+  # ※ $t を使用した場合、title_date_align を無視する
+  #
+  def add_date_to_title(title)
+    result = title
+
     if @setting.enable_add_date_to_title
-      new_arrivals_date = data["new_arrivals_date"] || data["last_update"]
+      new_arrivals_date = @data[@setting.title_date_target] || Time.now
+      special_format_chars = [
+        ["$s", calc_reverse_short_time(new_arrivals_date)],
+        ["$ns", @data["sitename"]],
+        ["$nt", Narou.novel_type_text(@data["novel_type"])],
+        ["$t", title]
+      ]
+
       date_str = new_arrivals_date.strftime(@setting.title_date_format)
-      if @setting.title_date_align == "left"
-        processed_title = date_str + processed_title
-      else  # right
-        processed_title += date_str
+      doller_t_included = date_str.include?("$t")
+
+      special_format_chars.each do |(symbol, replace_text)|
+        date_str.gsub!(symbol, replace_text)
+      end
+
+      if doller_t_included
+        # $t で任意の位置にタイトルを埋め込むために title_date_align は無視する
+        result = date_str
+      else
+        if @setting.title_date_align == "left"
+          result = date_str + result
+        else  # right
+          result = title + date_str
+        end
       end
     end
+    result
+  end
+
+  def decorate_title(title)
+    processed_title = add_date_to_title(title)
     # タイトルに完結したかどうかを付加する
-    tags = data["tags"] || []
-    if tags.include?("end")
-      processed_title += " (完結)"
+    if @setting.enable_add_end_to_title
+      tags = @data["tags"] || []
+      if tags.include?("end")
+        processed_title += " (完結)"
+      end
     end
     # タイトルがルビ化されてしまうのを抑制
     processed_title = processed_title.gsub("《", "※［＃始め二重山括弧］")
                                      .gsub("》", "※［＃終わり二重山括弧］")
-    tempalte_name = (device && device.ibunko? ? NOVEL_TEXT_TEMPLATE_NAME_FOR_IBUNKO : NOVEL_TEXT_TEMPLATE_NAME)
-    Template.get(tempalte_name, binding, 1.0)
+    processed_title
   end
 
   #
@@ -329,84 +508,137 @@ class NovelConverter
     end
   end
 
-  def find_site_setting
-    @@site_settings.find { |s| s.multi_match(@toc["toc_url"], "url") }
+  #
+  # 目次情報からサイト設定を取得
+  #
+  def find_site_setting(toc_url)
+    @@site_settings.find { |s| s.multi_match(toc_url, "url") }
   end
 
   #
-  # 変換処理メイン
+  # 各小説用の converter.rb 変換オブジェクトを生成
   #
-  def convert_main(text = nil)
-    print "ID:#{@novel_id}　" if @novel_id
-    puts "#{@novel_title} の変換を開始"
-    sections = []
-    @cover_chuki = create_cover_chuki
+  def create_converter
+    load_converter(@novel_title, @setting.archive_path).new(@setting, @inspector, @illustration)
+  end
 
-    conv = load_converter(@novel_title, @setting.archive_path).new(@setting, @inspector, @illustration)
-    if text
-      result = conv.convert(text, "textfile")
-      unless @setting.enable_enchant_midashi
-        @inspector.info "テキストファイルの処理を実行しましたが、改行直後の見出し付与は有効になっていません。" +
-                        "setting.ini の enable_enchant_midashi を true にすることをお薦めします。"
-      end
-      splited = result.split("\n", 3)
-      result = [splited[0], splited[1], @cover_chuki, splited[2]].join("\n")   # 表紙の挿絵注記を3行目に挟み込む
-    else
-      @section_save_dir = Downloader.get_novel_section_save_dir(@setting.archive_path)
-      @toc = Downloader.get_toc_data(@setting.archive_path)
-      @toc["story"] = conv.convert(@toc["story"], "story")
-      html = HTML.new
-      site_setting = find_site_setting
-      html.set_illust_setting({current_url: site_setting["illust_current_url"],
-                               grep_pattern: site_setting["illust_grep_pattern"]})
-      progressbar = ProgressBar.new(@toc["subtitles"].size)
-      @toc["subtitles"].each_with_index do |subinfo, i|
-        progressbar.output(i)
-        section = load_novel_section(subinfo)
-        if section["chapter"].length > 0
-          section["chapter"] = conv.convert(section["chapter"], "chapter")
-        end
-        @inspector.subtitle = section["subtitle"]
-        element = section["element"]
-        data_type = element.delete("data_type") || "text"
-        element.each do |text_type, elm_text|
-          if data_type == "html"
-            html.string = elm_text
-            elm_text = html.to_aozora
-          end
-          element[text_type] = conv.convert(elm_text, text_type)
-        end
-        section["subtitle"] = conv.convert(section["subtitle"], "subtitle")
-        sections << section
-      end
-      progressbar.clear
-      result = create_novel_text_by_template(sections)
-    end
-
-    @use_dakuten_font = conv.use_dakuten_font
-
-    inspect_novel(result)
-
+  #
+  # 最終的に出力するパスを生成
+  #
+  def create_output_path(is_text_file_mode, converted_text)
+    output_path = ""
     if @output_filename
-      save_path = File.join(@setting.archive_path, File.basename(@output_filename))
+      output_path = File.join(@setting.archive_path, File.basename(@output_filename))
     else
-      if text
-        info = get_title_and_author_by_text(result)
+      if is_text_file_mode
+        info = get_title_and_author_by_text(converted_text)
+        info["ncode"] = info["title"]
+        info["domain"] = "text"
       else
-        info = { "author" => @novel_author, "title" => @novel_title }
+        info = {
+          "id" => @novel_id,
+          "author" => @novel_author, "title" => @novel_title
+        }
       end
-      save_filename = Narou.create_novel_filename(info)
-      save_path = File.join(@setting.archive_path, save_filename)
-      if save_path !~ /\.\w+$/
-        save_path += ".txt"
+      filename = Narou.create_novel_filename(info)
+      output_path = File.join(@setting.archive_path, filename)
+      if output_path !~ /\.\w+$/
+        output_path += ".txt"
       end
     end
-    File.write(save_path, result)
-    puts "縦書用の変換が終了しました"
+    output_path
+  end
 
-    update_latest_convert_novel
+  #
+  # テキストファイル変換時の実質的なメイン処理
+  #
+  def convert_main_for_text(text)
+    result = @converter.convert(text, "textfile")
+    unless @setting.enable_enchant_midashi
+      @inspector.info "テキストファイルの処理を実行しましたが、改行直後の見出し付与は有効になっていません。" +
+                      "setting.ini の enable_enchant_midashi を true にすることをお薦めします。"
+    end
+    splited = result.split("\n", 3)
+    # 表紙の挿絵注記を3行目に挟み込む
+    converted_text = [splited[0], splited[1], create_cover_chuki, splited[2]].join("\n")
 
-    save_path
+    @use_dakuten_font = @converter.use_dakuten_font
+
+    converted_text
+  end
+
+  #
+  # 管理小説変換時の実質的なメイン処理
+  #
+  # 引数 subtitles にデータを渡した場合はそれを直接使う
+  # is_hotentry を有効にすると出力されるテキストファイルにあらすじや作品タイトル等が含まれなくなる
+  #
+  def convert_main_for_novel(subtitles = nil, is_hotentry = false)
+    toc = Downloader.get_toc_data(@setting.archive_path)
+    unless subtitles
+      subtitles = cut_subtitles(toc["subtitles"])
+    end
+    @converter.subtitles = subtitles
+    toc["story"] = @converter.convert(toc["story"], "story")
+    html = HTML.new
+    html.strip_decoration_tag = @setting.enable_strip_decoration_tag
+    site_setting = find_site_setting(toc["toc_url"])
+    html.set_illust_setting({current_url: site_setting["illust_current_url"],
+                             grep_pattern: site_setting["illust_grep_pattern"]})
+
+    sections = subtitles_to_sections(subtitles, html)
+    converted_text = create_novel_text_by_template(sections, toc, is_hotentry)
+
+    converted_text
+  end
+
+  def cut_subtitles(subtitles)
+    case cut_size = @setting.cut_old_subtitles
+    when 0
+      result = subtitles
+    when 1...subtitles.size
+      puts "#{cut_size}話分カットして変換します"
+      result = subtitles[cut_size..-1]
+    else
+      puts "最新話のみ変換します"
+      result = [subtitles[-1]]
+    end
+    result
+  end
+
+  #
+  # subtitle info から変換処理をする
+  #
+  def subtitles_to_sections(subtitles, html)
+    sections = []
+    section_save_dir = Downloader.get_novel_section_save_dir(@setting.archive_path)
+
+    trigger(:"convert_main.init", subtitles)
+
+    subtitles.each_with_index do |subinfo, i|
+      trigger(:"convert_main.loop", i)
+      @converter.current_index = i
+      section = load_novel_section(subinfo, section_save_dir)
+      if section["chapter"].length > 0
+        section["chapter"] = @converter.convert(section["chapter"], "chapter")
+      end
+      @inspector.subtitle = section["subtitle"]
+      element = section["element"]
+      data_type = element.delete("data_type") || "text"
+      element.each do |text_type, elm_text|
+        if data_type == "html"
+          html.string = elm_text
+          elm_text = html.to_aozora
+        end
+        element[text_type] = @converter.convert(elm_text, text_type)
+      end
+      section["subtitle"] = @converter.convert(section["subtitle"], "subtitle")
+      sections << section
+    end
+    @use_dakuten_font = @converter.use_dakuten_font
+    sections
+  ensure
+    trigger(:"convert_main.finish")
   end
 
   #
@@ -418,9 +650,10 @@ class NovelConverter
   end
 
   def inspect_novel(text)
-    # 行末読点の現在状況を調査する
-    @inspector.inspect_end_touten_conditions(text)
-    @inspector.countup_return_in_brackets(text)
+    if @setting.enable_inspect
+      @inspector.inspect_end_touten_conditions(text)   # 行末読点の現在状況を調査する
+      @inspector.countup_return_in_brackets(text)      # カギ括弧内の改行状況を調査する
+    end
 
     if !@display_inspector
       unless @inspector.empty?
@@ -450,7 +683,7 @@ class NovelConverter
   #
   def update_latest_convert_novel
     id = Downloader.get_id_by_target(@novel_title)
-    Inventory.load("latest_convert", :local).tap { |inv|
+    Inventory.load("latest_convert").tap { |inv|
       inv["id"] = id
       inv.save
     }

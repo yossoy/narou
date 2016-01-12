@@ -18,8 +18,10 @@ module Narou
   AOZORAEPUB3_DIR = "AozoraEpub3"
   PRESET_DIR = "preset"
   MISC_DIR = "misc"
-  EXIT_ERROR_CODE = 127
   GLOBAL_REPLACE_NAME = "replace.txt"
+  EXIT_ERROR_CODE = 127
+  EXIT_INTERRUPT = 126
+  EXIT_REQUEST_REBOOT = 125
 
   UPDATE_SORT_KEYS = {
     "id" => "ID", "last_update" => "更新日", "title" => "タイトル", "author" => "作者名",
@@ -33,9 +35,10 @@ module Narou
 
   def get_root_dir
     root_dir = nil
-    path = File.expand_path(File.dirname("."))
+    path = Dir.pwd
     drive_letter = ""
     if Helper.os_windows?
+      path.encode!(Encoding::UTF_8)
       path.gsub!(/^[a-z]:/i, "")
       drive_letter = $&
     end
@@ -85,17 +88,22 @@ module Narou
     Database.init
   end
 
+  #
+  # target が alias だった場合はIDに変換する
+  #
+  # 全てのtarget照合系はこのメソッドを通過するので、ここで小文字にしてしまう
+  #
   def alias_to_id(target)
-    aliases = Inventory.load("alias", :local)
+    aliases = Inventory.load("alias")
     if aliases[target]
       return aliases[target]
     end
-    target
+    target.kind_of?(Numeric) ? target : target.downcase
   end
 
   def novel_frozen?(target)
     id = Downloader.get_id_by_target(target) or return false
-    Inventory.load("freeze", :local).include?(id)
+    Inventory.load("freeze").include?(id)
   end
 
   def get_preset_dir
@@ -176,11 +184,32 @@ module Narou
   end
   memoize :get_aozoraepub3_path
 
+  #
+  # 書籍ファイル名を生成する
+  # convert.filename-to-ncode を設定している場合に novel_data に ncode、domain を
+  # 設定しない場合は id カラムが必須
+  #
   def create_novel_filename(novel_data, ext = "")
-    author, title = %w(author title).map { |k|
-      Helper.replace_filename_special_chars(novel_data[k], true)
-    }
-    "[#{author}] #{title}#{ext}"
+    filename_to_ncode = Inventory.load("local_setting")["convert.filename-to-ncode"]
+    if filename_to_ncode
+      ncode, domain = novel_data["ncode"], novel_data["domain"]
+      if !ncode || !domain
+        id = novel_data["id"]
+        unless id
+          raise ArgumentError, %!novel_data["id"] を設定して下さい!
+        end
+        site_setting = Downloader.get_sitesetting_by_target(id)
+        ncode = site_setting["ncode"]
+        domain = site_setting["domain"]
+      end
+      serialized_domain = domain.to_s.gsub(".", "_")
+      %!#{serialized_domain}_#{ncode}#{ext}!
+    else
+      author, title = %w(author title).map { |k|
+        Helper.replace_filename_special_chars(novel_data[k], true)
+      }
+      "[#{author}] #{title}#{ext}"
+    end
   end
 
   def get_mobi_path(target)
@@ -201,7 +230,7 @@ module Narou
   require_relative "device"
 
   def get_device(device_name = nil)
-    device_name = Inventory.load("local_setting", :local)["device"] unless device_name
+    device_name = Inventory.load("local_setting")["device"] unless device_name
     if device_name && Device.exists?(device_name)
       return Device.create(device_name)
     end
@@ -221,5 +250,50 @@ module Narou
       "#{key.rjust(width)} : #{summary}"
     }.join("\n")
   end
+
+  def get_theme
+    Inventory.load("local_setting")["theme"]
+  end
+
+  def get_theme_dir(name = nil)
+    File.join([get_script_dir, "lib/web/public/theme", name].compact)
+  end
+
+  def get_theme_names
+    Dir.glob(get_theme_dir("*")).map do |path|
+      name = File.basename(path)
+      name == "fonts" ? nil : name
+    end.compact
+  end
+  memoize :get_theme_names
+
+  def economy?(mode)
+    eco_modes = Inventory.load("local_setting")["economy"].to_s.split(",").map(&:strip)
+    eco_modes.include?(mode)
+  end
+
+  def novel_type_text(type)
+    type == 2 ? "短編" : "連載"
+  end
+
+  #
+  # Narou.rb gem の最新バージョン番号を取得する
+  #
+  # rubygems公式APIによる取得は、WindowsでのSSL証明書問題で取得出来ない
+  # 環境があるため、gemコマンド経由で取得する
+  #
+  def latest_version
+    response = `gem search ^narou$`.split("\n")
+    if response.last =~ /\Anarou \((.+?)\)\z/
+      $1
+    end
+  end
+
+  def commit_version
+    cv_path = File.expand_path("commitversion", get_script_dir)
+    File.read(cv_path) if File.exist?(cv_path)
+  end
+  memoize :commit_version
+
  end
 end

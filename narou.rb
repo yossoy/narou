@@ -6,7 +6,9 @@
 # Copyright 2013 whiteleaf. All rights reserved.
 #
 
-$debug = File.exist?(File.join(File.expand_path(File.dirname(__FILE__)), "debug"))
+script_dir = File.expand_path(File.dirname(__FILE__))
+$debug = File.exist?(File.join(script_dir, "debug"))
+
 Encoding.default_external = Encoding::UTF_8
 
 if ARGV.delete("--time")
@@ -17,6 +19,13 @@ if ARGV.delete("--time")
 end
 
 require_relative "lib/inventory"
+
+$development = Narou.commit_version.!
+begin
+  require "pry" if $development
+rescue LoadError
+end
+
 global = Inventory.load("global_setting", :global)
 $display_backtrace = ARGV.delete("--backtrace")
 $display_backtrace ||= $debug
@@ -28,14 +37,6 @@ require_relative "lib/version"
 require_relative "lib/commandline"
 
 rescue_level = $debug ? Exception : StandardError
-
-if !global["dismiss-notice"] && RUBY_VERSION < "2.1.0"
-  puts <<-EOS.termcolor
-<cyan><bold>[Notice]
-ご使用のRubyのバージョンが#{RUBY_VERSION}と古いままです。近い将来Ruby2.1.0以上を必須とする予定なので準備をお願いします
-このお知らせを消すには narou s dismiss-notice=true を実行して下さい</bold></cyan>
-  EOS
-end
 
 begin
   CommandLine.run(ARGV.map { |v| v.dup })

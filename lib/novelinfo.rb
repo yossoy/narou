@@ -37,7 +37,7 @@ class NovelInfo
     info_source = ""
     cookie = @setting["cookie"] || ""
     open(info_url, "Cookie" => cookie) do |fp|
-      info_source = Helper.pretreatment_source(fp.read, @setting["encoding"])
+      info_source = Helper.restor_entity(Helper.pretreatment_source(fp.read, @setting["encoding"]))
       raise Downloader::DownloaderNotFoundError if Downloader.detect_error_message(@setting, info_source)
     end
     @setting.multi_match(info_source, *request_output_parameters)
@@ -53,7 +53,9 @@ class NovelInfo
                              # ハーメルンで短編なのに連載形式のがあるため
                              ga && ga > "1" ? 1 : 2
                            end
-    result["story"] = HTML.new(@setting["story"]).to_aozora
+    story_html = HTML.new(@setting["story"])
+    story_html.strip_decoration_tag = true
+    result["story"] = story_html.to_aozora
     result["writer"] = @setting["writer"]
     %w(general_firstup novelupdated_at general_lastup).each do |elm|
       result[elm] = Helper.date_string_to_time(@setting[elm])

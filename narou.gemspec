@@ -32,59 +32,79 @@ Gem::Specification.new do |gem|
   install_message = <<-EOS
 #{"*" * 79}
 
-2.5.0 : 2015/07/10
+2.8.0 : 2015/12/09
 ------------------
 #### 追加機能
-- WEB UI の個別メニューから「差分を表示」を選択した際に、過去の差分を選択出来る
-  ようにしました
-- WEB UI の個別メニューに「タグを編集」を追加しました
-- 変換設定の各項目の共通設定を変更できる default.* 系設定を追加しました
-	+ この共通設定は setting.ini で未設定の項目がある場合に適用されます。また、
-	  force.* が設定されていた場合は setting.ini、共通設定ともに無視されます
-	+ 例えば `enable_illust` の共通設定を変更したい場合、
-	  `narou s default.enable_illust=false` とすることで変更出来ます
-	  (WEB UIからは環境設定のページで隠しオプションを表示)
-- `convert` コマンドに `--ignore-default` オプションを追加しました。変換時の
-  default.* 系設定を無視します
-- `convert.copy-to-grouping` オプションを追加しました
-	+ copy-to で指定したフォルダの中に更に device もしくは convert.multi-device
-	  で指定した端末毎に振り分けるように出来ます
-	+ 有効にするには `narou s convert.copy-to-grouping=true` を実行して下さい
-- 全小説を対象にした replace.txt による置換に対応しました
-	+ narou init を使用したフォルダに replace.txt を設置すると認識します。
-	  WEB UI においては環境設定にて設定できます
-- `update` コマンドにアップデートの順番を変更する `--sort-by` オプションが追加
-  されました（短縮 `-s`）
-	+ `narou u --sort-by general_update` のように直接コマンドのオプションとして
-	  指定するか、 `narou s update.sort-by=general_update` と設定として保存して
-	  下さい
-	+ 指定出来るのは id, last_update(更新日), title(タイトル), author(作者名),
-	  new_arrivals_date(新着日), general_lastup(最新話掲載日) です
-- WEB UI の設定画面において一部項目をセレクトボックスで選択出来るようにしました
+- setting.ini に項目をいくつか追加しました
+	+ `title_date_format` の拡張書式として $s と $t を追加しました。
+		* $s : 2045年くらいまでの残り時間(10分間隔)を4桁の文字列で埋め込めます。
+		  タイトルの先頭に付加することで端末のタイトルソートで更新順に並び替えたり
+		  等に利用出来ます
+		* $t : 小説のタイトルそのものを埋め込めます。$t を利用することでタイトルの
+		  前後両方に日付等を付与することが可能になります。$t が使用された場合は
+		  title_date_align は無視されます
+	+ `enable_add_end_to_title` を追加しました。完結済小説のタイトルに(完結)と
+	  表示するかを制御出来ます
+	+ `cut_old_subtitles` を追加しました。指定した話数分変換の対象外にすることで
+	  変換速度を上げたり容量を節約したり出来ます。（カットした分栞が後ろにずれる
+	  と思うので注意して下さい）
+	+ `author_comment_style` を追加しました。前書き・後書きの装飾方法を指定出来る
+	  ようになります
+		* css:CSSで装飾。今までの奴です。何も設定しなければこれが使われます
+		* simple:シンプルに段落。字下げして文字を小さくしただけなのでデザインが崩れ
+		  にくいです。CSSで装飾すると不具合がでるKoboやAdobe Digital Editionでは
+		  こちらの使用をおすすめします
+		* plain:装飾しない。本文との間に区切り線をいれただけで、本文と同じ文字で
+		  表示します
+		* 一括で変更する場合は `narou s default.author_comment_style=simple` 等と
+		  デフォルト値を設定して下さい
+- ダイジェスト化時の選択肢を自動で選んでくれる
+  `download.choices-of-digest-options` という設定を追加しました
+	+ `narou s download.choices-of-digest-options=4,1` のようにカンマ区切りで
+	  選択したい項目を順番に設定して下さい。詳細は `narou s` コマンドを参照。
+	  WEB UI では「環境設定＞詳細」にあります
+- `convert.filename-to-ncode` という設定を追加しました。出力する書籍ファイル名
+  を「ドメイン名_Nコード」で固定出来ます
+	+ `narou s convert.filename-to-ncode=true` で設定出来ます。WEB UI では
+	  「環境設定＞一般」にあります
+	+ この機能により、作者名や小説タイトルが変わった際に出力ファイル名まで一緒に
+	  変更されてしまい栞が消えるのを防いだり、Kobo端末で不正なファイル名と認識
+	  されないようにすることが出来ます
+	+ 注意：最低一度は対象小説を更新しないと、変換してもファイル名は変わりません
 
 #### 仕様変更
-- default.* 系設定追加に伴い、新規DL時の setting.ini の全ての項目がコメント
-  アウトされた状態で生成されます。また、WEB UI の個別変換設定画面にて、各項目に
-  「未設定」が追加されます
-- `setting` コマンド(WEB UIにおける環境設定)の項目の順序・表示を変更しました
-- `setting` コマンドの一部項目で適切な値が入力されなかった場合にエラーが出る
-  ようになりました
-- WEB UI の個別メニュー内項目の並び順を変更しました
-- WEB UI サーバ起動中にコマンドラインで更新した場合でもサーバを再起動せずに変更
-  が反映されるようになりました
+- `enable_add_end_to_title` の追加に伴い、タイトルへの完結表示はデフォルトでは
+  行わなくなりました
+- rawデータや本文データを保存する際に長過ぎるファイル名を一定の長さで端折るよう
+  になりました
+	+ この影響で、update 時にエラーが出る場合があります。その場合は再度 update を
+	  することで以降は正常に更新することが出来ます（その際に新着と表示されますが
+	  仕様です）
+- `author_comment_style` の追加に伴い、Koboの前書き・後書きの装飾を特別に切り替
+  える処理を削除しました。`narou s default.author_comment_style=simple` で変更
+  して下さい
+- 行頭で半角スペースで字下げをしてものを全角スペースで置換するようになりました
 
 #### Bug Fix
-- `enable_insert_word_separator` を有効時に `［` が正常に禁則処理されない問題を
-  修正
-- i文庫形式に変換する際に `enable_illust` の設定が無視されていたのを修正
-- WEB UI サーバ起動中に converter.rb を編集しても反映されなかったのを修正
-- 文章中のリンクが正しく飛べない場合があったのを修正
+- 暁の小説で前書き・後書きがあった場合に正常に取得できなくなっていたのを修正
+
+
+2.8.1 : 2015/12/10
+------------------
+#### 追加機能
+- setting.ini の `title_date_format` に下記の拡張書式を追加しました
+	+ $ns : 小説が掲載されているサイト名
+	+ $nt : 小説種別（短編 or 連載）
+
+#### 仕様変更
+- `convert.filename-to-ncode` でファイル名をNコード化するのに、更新をしなくても
+  変換出来るようにしました
 
 #{"*" * 79}
   EOS
   gem.post_install_message = install_message.gsub("\t", "  ")
 
-  gem.required_ruby_version = ">=1.9.3"
+  gem.required_ruby_version = ">=2.1.0"
 
   gem.files         = `git ls-files`.split("\n") << Narou.create_git_commit_version
   gem.executables   = gem.files.grep(%r{^bin/}).map{ |f| File.basename(f) }
@@ -96,8 +116,11 @@ Gem::Specification.new do |gem|
   gem.add_runtime_dependency 'diff-lcs', '~> 1.2', '>= 1.2.5'
   gem.add_runtime_dependency 'sinatra', '~> 1.4', '>= 1.4.5'
   gem.add_runtime_dependency 'sinatra-contrib', '~> 1.4', '>= 1.4.2'
-  gem.add_runtime_dependency 'sass', '~> 3.4', '>= 3.4.4'
-  gem.add_runtime_dependency 'haml', '~> 4.0', '>= 4.0.5'
+  gem.add_runtime_dependency 'tilt', '~> 2.0', '>= 2.0.1'
+  gem.add_runtime_dependency 'sass', '~> 3.4', '>= 3.4.18'
+  gem.add_runtime_dependency 'haml', '~> 4.0', '>= 4.0.7'
   gem.add_runtime_dependency 'memoist', '~> 0.11.0'
+  gem.add_runtime_dependency 'systemu', '~> 2.6', '>= 2.6.5'
+  gem.add_runtime_dependency 'erubis', '~> 2.7'
 end
 
